@@ -76,7 +76,7 @@ class ThermistorData:
         
         return self.data
 
-class PlotThermistorData:
+class ThermistorDataPlotter:
     """
         Class to plot thermistor data.
     """
