@@ -1,136 +1,63 @@
 import pandas as pd
 import matplotlib.pyplot as plt
 
-from matplotlib import dates as mdates
-from read_thermistor_data import ThermistorData as td
+# import self-written modules
+from process_thermistor_data import ThermistorData
+from process_thermistor_data import PlotThermistorData
 
 """
-    This script is used to plot the data from a thermistor data file.
+    Python script to read & plot different types of thermistor data.
 """
 
-class PlotThermistorData:
-    def __init__(self, file_path, measurement_depth = None, delimiter = ','):
-        if isinstance(file_path, list):
-            self.file_paths = file_path
-            self.file_path = file_path[0]
-        else:
-            self.file_paths = [file_path]
-            self.file_path = file_path
-        self.delimiter = delimiter
-        self.measurement_depth = measurement_depth
+# set the path to the data
+cal_path  = '/Users/janoschbeer/Library/Mobile Documents/com~apple~CloudDocs/PhD/data/fieldwork_data/Polythermal_Glaciers/NTC/NTC_calibration_data/'
+temp_path = '/Users/janoschbeer/Library/Mobile Documents/com~apple~CloudDocs/PhD/data/fieldwork_data/Polythermal_Glaciers/NTC/NTC_temperature_data/'
 
-    def plot_full_chain(self, start_time, end_time, savepath, title=None):
-        thermistor = td(self.file_path, self.measurement_depth, self.delimiter)
-        data = thermistor.get_chain_data(start_time, end_time)
-        data['TIME'] = pd.to_datetime(data['TIME'])
+# set the path for the output
+output_path = '/Users/janoschbeer/Library/Mobile Documents/com~apple~CloudDocs/PhD/projects/asses_swiss_gl_therm_regimes/products/figures/'
 
-        # adjust figure size based on legend size
-        plt.figure(dpi=300)  # adjust the values as per your requirement and set dpi for resolution
+## Plot 0 degree ice bath calibration results ##
+# -------------------------------------------- #
 
-        # plot the data
-        for column in data.columns:
-            if column not in ['NO', 'TIME', 'TEMP LOGGER', 'TEMP BATTERY']:
-                print(column)
-                plt.plot(data['TIME'], data[column], label=column)
+# read the data
+ntc_thermistor = ThermistorData(f'{data_path}/#1_ice_bath_0deg_offset.csv', ',')
 
-        # format the plot
-        plt.xlabel('Time')
-        plt.ylabel('Temperature [°C]')
-        plt.title(title)
-        plt.legend(loc='center left', bbox_to_anchor=(1, 0.5), title='Depth [m]', ncol=2, fontsize='small')  # Set ncol=2 for two columns
-        plt.xticks(rotation=45)  # Rotate x ticks 45 degrees
-        plt.grid()
-        plt.tight_layout()
+# get the data
+ntc_thermistor_data = ntc_thermistor.get_ntc_data()
 
-        # modify x-axis tick format to show date and time without seconds
-        plt.gca().xaxis.set_major_formatter(mdates.DateFormatter('%m-%d %H:%M'))
+# plot the data
+plotter = PlotThermistorData(data_path)
+plotter.plot_ntc_data(filename = '#8_ice_bath_0deg_offset.csv',savepath=data_path, title='0deg offset ice bath - Logger: #8')
 
-        # save the plot
-        plt.savefig(savepath)
+## Plot Measurement period 1 08/2024 - 10/2024 ##
+# -------------------------------------------- #
 
-    def plot_specific_thermistors(self, start_time, end_time, depths, savepath, title=None):
-        thermistor = td(self.file_path, self.measurement_depth, self.delimiter)
-        data = thermistor.get_chain_data(start_time, end_time)
-        data['TIME'] = pd.to_datetime(data['TIME'])
+# create a PlotThermistorData object per borehole
+tortin_bh3   = PlotThermistorData(temp_path + 'tortin_BH3_20240807_20240930.csv', delimiter=',')
+tortin_bh4   = PlotThermistorData(temp_path + 'tortin_BH4_20240807_20240930.csv', delimiter=',')
+hohlaub_bh5  = PlotThermistorData(temp_path + 'hohlaub_BH5_20240808_20240929.csv', delimiter=',')
+hohlaub_bh6  = PlotThermistorData(temp_path + 'hohlaub_BH6_20240808_20240929.csv', delimiter=',')
+chessjen_bh7 = PlotThermistorData(temp_path + 'chessjen_BH7_20240809_20240929.csv', delimiter=',')
+chessjen_bh8 = PlotThermistorData(temp_path + 'chessjen_BH8_20240809_20240929.csv', delimiter=',')
 
-        # adjust figure size based on legend size
-        plt.figure(dpi=300)  # adjust the values as per your requirement and set dpi for resolution
+# create a PlotThermistorData object per glacier
+tortin_dirs   = [temp_path + 'tortin_BH3_20240807_20240930.csv', temp_path + 'tortin_BH4_20240807_20240930.csv']
+hohlaub_dirs  = [temp_path + 'hohlaub_BH5_20240808_20240929.csv', temp_path + 'hohlaub_BH6_20240808_20240929.csv']
+chessjen_dirs = [temp_path + 'chessjen_BH7_20240809_20240929.csv', temp_path + 'chessjen_BH8_20240809_20240929.csv']
 
-        # plot the data for each depth
-        for depth in depths:
-            thermistor_column = f'{depth} m'
-            plt.plot(data['TIME'], data[thermistor_column], label=thermistor_column)
+tortin   = PlotThermistorData(tortin_dirs, delimiter=',')
+hohlaub  = PlotThermistorData(hohlaub_dirs, delimiter=',')
+chessjen = PlotThermistorData(chessjen_dirs, delimiter=',')
 
-        # format the plot
-        plt.xlabel('Time')
-        plt.ylabel('Temperature [°C]')
-        plt.title(title)
-        plt.legend(title='Depth [m]', fontsize='small')
-        plt.xticks(rotation=45)  # Rotate x ticks 45 degrees
-        plt.grid()
-        plt.tight_layout()
+# plot the data per borehole
+tortin_bh3.plot_ntc_data(savepath=output_path, title='Tortin BH3 08/2024-09/2024', depth_white_probe=4.2, depth_black_probe=9.2)
+tortin_bh4.plot_ntc_data(savepath=output_path, title='Tortin BH4 08/2024-09/2024', depth_white_probe=8.3, depth_black_probe=13.3)
+hohlaub_bh5.plot_ntc_data(savepath=output_path, title='Hohlaub BH5 08/2024-09/2024', depth_white_probe=10.6, depth_black_probe=15.6)
+hohlaub_bh6.plot_ntc_data(savepath=output_path, title='Hohlaub BH6 08/2024-09/2024', depth_white_probe=10.4, depth_black_probe=15.4)
+chessjen_bh7.plot_ntc_data(savepath=output_path, title='Chessjen BH7 09/2024-09/2024', depth_white_probe=6.8, depth_black_probe=11.8, lower_y_limit=-1.2)
+chessjen_bh8.plot_ntc_data(savepath=output_path, title='Chessjen BH8 09/2024-09/2024', depth_white_probe=8.5, depth_black_probe=13.5, lower_y_limit=-1.2)
 
-        # save the plot
-        plt.savefig(savepath)
-    
-    def plot_multiple_thermistor_chains(self, start_time, end_time, depths, savepath, title=None):
-        thermistor1 = td(self.file_path, self.measurement_depth, self.delimiter)
-        thermistor2 = td(self.file_paths[1], self.measurement_depth, self.delimiter)
-        data1 = thermistor1.get_chain_data(start_time, end_time)
-        data2 = thermistor2.get_chain_data(start_time, end_time)
-        data1['TIME'] = pd.to_datetime(data1['TIME'])
-        data2['TIME'] = pd.to_datetime(data2['TIME'])
-
-        # adjust figure size based on legend size
-        plt.figure(dpi=300)  # adjust the values as per your requirement and set dpi for resolution
-
-        # plot the data for each depth
-        thermistor_column1 = f'{depths[0]} m'
-        thermistor_column2 = f'{depths[1]} m'
-        plt.plot(data1['TIME'], data1[thermistor_column1], label=f'Disturbed borehole')
-        plt.plot(data2['TIME'], data2[thermistor_column2], label=f'Pre-drilled borehole')
-
-        # format the plot
-        plt.xlabel('Time')
-        plt.ylabel('Temperature [°C]')
-        plt.title(title)
-        plt.legend(fontsize='small')
-        plt.xticks(rotation=45)  # Rotate x ticks 45 degrees
-        plt.grid()
-        plt.tight_layout()
-
-        # modify x-axis tick format to show date and time without seconds
-        plt.gca().xaxis.set_major_formatter(mdates.DateFormatter('%m-%d %H:%M'))
-
-        # save the plot
-        plt.savefig(savepath)
-    
-    def plot_ntc_data(self, savepath, title=None, depth_white_probe=None, depth_black_probe=None, lower_y_limit=-1):
-        ntc_thermistor = td(self.file_path, self.measurement_depth, self.delimiter)
-        ntc_thermistor_data = ntc_thermistor.get_ntc_data()
-
-        # adjust figure size based on legend size
-        plt.figure(dpi=300)
-
-        # plot the data
-        plt.plot(ntc_thermistor_data['TIME'], ntc_thermistor_data['White Probe Temperature'], label=str(depth_white_probe) + ' m')
-        plt.plot(ntc_thermistor_data['TIME'], ntc_thermistor_data['Black Probe Temperature'], label=str(depth_black_probe) + ' m')
-
-        # format the plot
-        plt.xlabel('Time')
-        plt.ylabel('Temperature [°C]')
-        plt.title(title)
-        plt.legend()
-        # plt.xticks(rotation=45)  # Rotate x ticks 45 degrees
-        plt.grid()
-        plt.axhline(y=0, color='k', linestyle='--')  # Add a dashed line at 0°C
-        plt.ylim(lower_y_limit, 0.2)
-
-        # modify x-axis tick format to show date and time without seconds
-        plt.gca().xaxis.set_major_formatter(mdates.DateFormatter('%m-%d'))
-
-        plt.tight_layout()
-
-        # save the plot
-        title_with_underscores = title.replace(' ', '_').replace('/', '').replace('-', '_')
-        plt.savefig(savepath + title_with_underscores + '.png')
+# plot the data per glacier
+tortin.plot_multiple_ntc_boreholes(savepath=output_path, title='Glacier de Tortin 08/2024-09/2024', depths=[4.2,9.2,8.3,13.3], borehole_labels=['BH3','BH4'], lower_y_limit=-0.5)
+hohlaub.plot_multiple_ntc_boreholes(savepath=output_path, title='Hohlaubgletscher 08/2024-09/2024', depths=[10.6,15.6,10.4,15.4], borehole_labels=['BH5','BH6'], lower_y_limit=-1.2)
+chessjen.plot_multiple_ntc_boreholes(savepath=output_path, title='Chessjengletscher 08/2024-09/2024', depths=[6.8,11.8,8.5,13.5], borehole_labels=['BH7','BH8'], lower_y_limit=-1.2, legend_loc='upper right')
