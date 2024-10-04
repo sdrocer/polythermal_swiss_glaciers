@@ -91,13 +91,15 @@ class ThermistorDataPlotter:
         self.measurement_depth = measurement_depth
 
     def format_plot(self, title, legend_loc='upper right'):
+        # Change the default font to Arial
+        plt.rcParams['font.sans-serif'] = 'Arial'
         plt.xlabel('Time', fontsize=14)
         plt.ylabel('Ice temperature [°C]', fontsize=14)
         plt.title(title, fontsize=14)
         plt.legend(fontsize='small', frameon=True, fancybox=False, edgecolor='black', framealpha=1, facecolor='white', loc=legend_loc)
         plt.axhline(y=0, color='k', linestyle='--', linewidth=1)
-        plt.xticks(rotation=45, fontsize=12)  # Rotate x ticks 45 degrees
-        plt.yticks(fontsize=12)
+        plt.xticks(rotation=45, fontsize=14)  # Rotate x ticks 45 degrees
+        plt.yticks(fontsize=14)
         plt.grid()
         plt.tight_layout()
 
@@ -233,18 +235,21 @@ class ThermistorDataPlotter:
 
         # Plot for borehole 1
         plt.plot(ntc_thermistor_data1['TIME'], ntc_thermistor_data1['White Probe Temperature'], 
-             label=f'{borehole_labels[0]} - {depths[0]} m', color=colors_borehole1[0], linewidth=1.5)
+             label=f'{borehole_labels[0]} - {depths[0]} m', color=colors_borehole1[0], linewidth=2)
         plt.plot(ntc_thermistor_data1['TIME'], ntc_thermistor_data1['Black Probe Temperature'], 
-             label=f'{borehole_labels[0]} - {depths[1]} m', color=colors_borehole1[1], linewidth=1.5)
+             label=f'{borehole_labels[0]} - {depths[1]} m', color=colors_borehole1[1], linewidth=2)
         
         # Plot for borehole 2 with dotted lines
         plt.plot(ntc_thermistor_data2['TIME'], ntc_thermistor_data2['White Probe Temperature'], 
-             label=f'{borehole_labels[1]} - {depths[2]} m', color=colors_borehole2[0], linewidth=1.5)
+             label=f'{borehole_labels[1]} - {depths[2]} m', color=colors_borehole2[0], linewidth=2)
         plt.plot(ntc_thermistor_data2['TIME'], ntc_thermistor_data2['Black Probe Temperature'], 
-             label=f'{borehole_labels[1]} - {depths[3]} m', color=colors_borehole2[1], linewidth=1.5)
+             label=f'{borehole_labels[1]} - {depths[3]} m', color=colors_borehole2[1], linewidth=2)
 
         # format the plot specific to the data
         plt.ylim(lower_y_limit, 0.2)
+        deployment_date = ntc_thermistor_data1['TIME'].min()  # Use the first date of the timeseries
+        plt.axvline(deployment_date, color='gray', linestyle='solid', linewidth=2)
+        plt.text(deployment_date, plt.ylim()[0], 'Deployment', color='gray', fontsize=14, verticalalignment='top', horizontalalignment='right', rotation=45)
         plt.gca().xaxis.set_major_formatter(mdates.DateFormatter('%m-%d'))
         plt.gca().xaxis.set_major_locator(mdates.DayLocator(interval=8))  # Set x-ticks to be equally spaced by 1 day
  
