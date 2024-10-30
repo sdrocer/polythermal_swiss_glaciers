@@ -64,8 +64,8 @@ class ThermistorData:
     def get_ntc_data(self):
         # Read the CSV file with the correct encoding and skip the first 5 rows
         self.data = pd.read_csv(self.file_path, sep=self.delimiter, header=None, skiprows=5, 
-                                names=['Measurement', 'TIME', 'Black Probe Temperature', 'White Probe Temperature'], 
-                                encoding='latin1')
+                    names=['Measurement', 'TIME', 'Black Probe Temperature', 'White Probe Temperature'], 
+                    encoding='latin1')
         
         # Convert the TIME column to datetime format
         self.data['TIME'] = pd.to_datetime(self.data['TIME'])
@@ -74,6 +74,10 @@ class ThermistorData:
         self.data['Black Probe Temperature'] = self.data['Black Probe Temperature'].apply(lambda x: re.sub(r'[^0-9.-]', '', x)).astype(float)
         self.data['White Probe Temperature'] = self.data['White Probe Temperature'].apply(lambda x: re.sub(r'[^0-9.-]', '', x)).astype(float)
         
+        # Replace -42.004 with NaN values
+        self.data['Black Probe Temperature'] = self.data['Black Probe Temperature'].replace(-42.004, np.nan)
+        self.data['White Probe Temperature'] = self.data['White Probe Temperature'].replace(-42.004, np.nan)
+
         return self.data
 
 class ThermistorDataPlotter:
@@ -93,13 +97,13 @@ class ThermistorDataPlotter:
     def format_plot(self, title, legend_loc='upper right'):
         # Change the default font to Arial
         plt.rcParams['font.sans-serif'] = 'Arial'
-        plt.xlabel('Time', fontsize=14)
-        plt.ylabel('Ice temperature [°C]', fontsize=14)
-        plt.title(title, fontsize=14)
-        plt.legend(fontsize='small', frameon=True, fancybox=False, edgecolor='black', framealpha=1, facecolor='white', loc=legend_loc)
-        plt.axhline(y=0, color='k', linestyle='--', linewidth=1)
-        plt.xticks(rotation=45, fontsize=14)  # Rotate x ticks 45 degrees
-        plt.yticks(fontsize=14)
+        plt.xlabel('Time', fontsize=22)
+        plt.ylabel('Ice temperature [°C]', fontsize=22)
+        # plt.title(title, fontsize=22)
+        plt.legend(fontsize=22, frameon=True, fancybox=False, edgecolor='black', framealpha=1, facecolor='white', loc=legend_loc)
+        plt.axhline(y=0, color='k', linestyle='--', linewidth=3)
+        plt.xticks(rotation=45, fontsize=22)  # Rotate x ticks 45 degrees
+        plt.yticks(fontsize=22)
         plt.grid()
         plt.tight_layout()
 
@@ -220,38 +224,81 @@ class ThermistorDataPlotter:
         plt.savefig(savepath + title_with_underscores + '.png')
 
     def plot_multiple_ntc_boreholes(self, savepath, depths, borehole_labels, title=None, lower_y_limit=-1, legend_loc='lower right'):
-        ntc_thermistor1 = ThermistorData(self.file_path, self.delimiter, self.measurement_depth)
-        ntc_thermistor_data1 = ntc_thermistor1.get_ntc_data()
+        if self.file_paths[0] is not None:
+            ntc_thermistor1 = ThermistorData(self.file_path, self.delimiter, self.measurement_depth)
+            ntc_thermistor_data1 = ntc_thermistor1.get_ntc_data()
+            deployment_date = ntc_thermistor_data1['TIME'].min() # set the deployment date to the first date of the first timeseries
+        else:
+            ntc_thermistor_data1 = pd.DataFrame()
 
-        ntc_thermistor2 = ThermistorData(self.file_paths[1], self.delimiter, self.measurement_depth)
-        ntc_thermistor_data2 = ntc_thermistor2.get_ntc_data()
+        if len(self.file_paths) > 1 and self.file_paths[1] is not None:
+            ntc_thermistor2 = ThermistorData(self.file_paths[1], self.delimiter, self.measurement_depth)
+            ntc_thermistor_data2 = ntc_thermistor2.get_ntc_data()
+            deployment_date = ntc_thermistor_data2['TIME'].min() # set the deployment date to the first date of the second timeseries
+        else:
+            ntc_thermistor_data2 = pd.DataFrame()
 
-        # adjust figure size based on legend size
-        plt.figure(dpi=300)
+        # Create figure and axis with the specified ratio
+        fig_ratio = 136.446 / 115.986
+        fig_width = 10 # Set the width of the figure
+        fig_height = fig_width / fig_ratio
 
-        # Define color palettes for each borehole
-        colors_borehole1 = plt.cm.Purples(np.linspace(0.3, 1, len(depths)))
-        colors_borehole2 = plt.cm.Oranges(np.linspace(0.3, 1, len(depths)))
+        fig = plt.figure(figsize=(fig_width, fig_height), dpi=300)
+        fig.patch.set_facecolor('#f3f2f2ff')  # Set the background color of the entire figure
 
-        # Plot for borehole 1
-        plt.plot(ntc_thermistor_data1['TIME'], ntc_thermistor_data1['White Probe Temperature'], 
-             label=f'{borehole_labels[0]} - {depths[0]} m', color=colors_borehole1[0], linewidth=2)
-        plt.plot(ntc_thermistor_data1['TIME'], ntc_thermistor_data1['Black Probe Temperature'], 
-             label=f'{borehole_labels[0]} - {depths[1]} m', color=colors_borehole1[1], linewidth=2)
-        
-        # Plot for borehole 2 with dotted lines
-        plt.plot(ntc_thermistor_data2['TIME'], ntc_thermistor_data2['White Probe Temperature'], 
-             label=f'{borehole_labels[1]} - {depths[2]} m', color=colors_borehole2[0], linewidth=2)
-        plt.plot(ntc_thermistor_data2['TIME'], ntc_thermistor_data2['Black Probe Temperature'], 
-             label=f'{borehole_labels[1]} - {depths[3]} m', color=colors_borehole2[1], linewidth=2)
+        # Define complementary color palettes for each borehole
+        colors_borehole1 = plt.cm.Reds(np.linspace(0.3, 1, len(depths)))
+        colors_borehole2 = plt.cm.Blues(np.linspace(0.3, 1, len(depths)))
+
+        if self.file_paths[0] is None:
+            # Plot for borehole 2 only
+            plt.plot(ntc_thermistor_data2['TIME'], ntc_thermistor_data2['White Probe Temperature'], 
+             label=f'{borehole_labels[1]} - {depths[2]} m', color=colors_borehole2[0], linewidth=4)
+            plt.fill_between(ntc_thermistor_data2['TIME'], 
+                     ntc_thermistor_data2['White Probe Temperature'] - 0.2, 
+                     ntc_thermistor_data2['White Probe Temperature'] + 0.2, 
+                     color=colors_borehole2[1], alpha=0.1)
+            plt.plot(ntc_thermistor_data2['TIME'], ntc_thermistor_data2['Black Probe Temperature'], 
+             label=f'{borehole_labels[1]} - {depths[3]} m', color=colors_borehole2[1], linewidth=4)
+            plt.fill_between(ntc_thermistor_data2['TIME'], 
+                     ntc_thermistor_data2['Black Probe Temperature'] - 0.2, 
+                     ntc_thermistor_data2['Black Probe Temperature'] + 0.2, 
+                     color=colors_borehole2[1], alpha=0.1)
+        else:
+            # Plot for borehole 1
+            plt.plot(ntc_thermistor_data1['TIME'], ntc_thermistor_data1['White Probe Temperature'], 
+             label=f'{borehole_labels[0]} - {depths[0]} m', color=colors_borehole1[0], linewidth=4)
+            plt.fill_between(ntc_thermistor_data1['TIME'], 
+                     ntc_thermistor_data1['White Probe Temperature'] - 0.2, 
+                     ntc_thermistor_data1['White Probe Temperature'] + 0.2, 
+                     color=colors_borehole1[1], alpha=0.1)
+            plt.plot(ntc_thermistor_data1['TIME'], ntc_thermistor_data1['Black Probe Temperature'], 
+             label=f'{borehole_labels[0]} - {depths[1]} m', color=colors_borehole1[1], linewidth=4)
+            plt.fill_between(ntc_thermistor_data1['TIME'], 
+                     ntc_thermistor_data1['Black Probe Temperature'] - 0.2, 
+                     ntc_thermistor_data1['Black Probe Temperature'] + 0.2, 
+                     color=colors_borehole1[1], alpha=0.1)
+            
+            # Plot for borehole 2 with dotted lines
+            plt.plot(ntc_thermistor_data2['TIME'], ntc_thermistor_data2['White Probe Temperature'], 
+             label=f'{borehole_labels[1]} - {depths[2]} m', color=colors_borehole2[0], linewidth=4)
+            plt.fill_between(ntc_thermistor_data2['TIME'], 
+                     ntc_thermistor_data2['White Probe Temperature'] - 0.2, 
+                     ntc_thermistor_data2['White Probe Temperature'] + 0.2, 
+                     color=colors_borehole2[1], alpha=0.1)
+            plt.plot(ntc_thermistor_data2['TIME'], ntc_thermistor_data2['Black Probe Temperature'], 
+             label=f'{borehole_labels[1]} - {depths[3]} m', color=colors_borehole2[1], linewidth=4)
+            plt.fill_between(ntc_thermistor_data2['TIME'], 
+                     ntc_thermistor_data2['Black Probe Temperature'] - 0.2, 
+                     ntc_thermistor_data2['Black Probe Temperature'] + 0.2, 
+                     color=colors_borehole2[1], alpha=0.1)
 
         # format the plot specific to the data
-        plt.ylim(lower_y_limit, 0.2)
-        deployment_date = ntc_thermistor_data1['TIME'].min()  # Use the first date of the timeseries
-        plt.axvline(deployment_date, color='gray', linestyle='solid', linewidth=2)
-        plt.text(deployment_date, plt.ylim()[0], 'Deployment', color='gray', fontsize=14, verticalalignment='top', horizontalalignment='right', rotation=45)
+        plt.ylim(lower_y_limit, 0.4)
+        plt.axvline(deployment_date, color='gray', linestyle='solid', linewidth=4)
+        plt.text(deployment_date, plt.ylim()[0], 'Deployment', color='gray', fontsize=22, verticalalignment='top', horizontalalignment='right', rotation=45)
         plt.gca().xaxis.set_major_formatter(mdates.DateFormatter('%m-%d'))
-        plt.gca().xaxis.set_major_locator(mdates.DayLocator(interval=8))  # Set x-ticks to be equally spaced by 1 day
+        plt.gca().xaxis.set_major_locator(mdates.DayLocator(interval=7))  # Set x-ticks to be equally spaced by 1 day
  
         # format the plot
         self.format_plot(title, legend_loc)
