@@ -59,75 +59,32 @@ def cut_rising_temperatures(file_path, output_file_path, threshold=0.5):
     # Write the cleaned content to a new CSV file
     data.to_csv(output_file_path, index=False)
 
-def calculate_0_degree_offset(file_path, window_size=10):
+def calculate_zero_degree_offset(data, threshold=0.1, window=10):
     """
-    Calculate the 0-degree offset for NTC sensors from a CSV file.
-
+    Calculate the 0-degree offset for a given probe temperature data series.
+    
     Parameters:
-    file_path (str): The path to the CSV file.
-    window_size (int): The size of the rolling window to identify the stable region.
-
+    - data: pd.DataFrame, the dataset containing the temperature data.
+    - threshold: float, the threshold for considering the temperature as stable.
+    - window: int, the window size for the rolling mean and standard deviation.
+    
     Returns:
-    tuple: A tuple containing the 0-degree offset for the black probe and the white probe.
+    - float, the mean temperature during the stable period.
     """
-    # Read the CSV file
-    data = pd.read_csv(file_path, skiprows=5, index_col=False)  # Skip the first 5 rows of metadata
-
-    # Clean the data
-    data.columns = ['Time', 'Black_Probe_Temperature', 'White_Probe_Temperature']
-    data['Black_Probe_Temperature'] = pd.to_numeric(data['Black_Probe_Temperature'], errors='coerce')
-    data['White_Probe_Temperature'] = pd.to_numeric(data['White_Probe_Temperature'], errors='coerce')
-
-    # Identify the region closest to 0 degrees
-    data['Black_Probe_Abs'] = data['Black_Probe_Temperature'].abs()
-    data['White_Probe_Abs'] = data['White_Probe_Temperature'].abs()
-
-    # Find the index where the temperature is closest to 0 degrees
-    black_probe_closest_to_zero_index = data['Black_Probe_Abs'].idxmin()
-    white_probe_closest_to_zero_index = data['White_Probe_Abs'].idxmin()
-
-    # Define the stable region around the closest to 0 degrees index
-    black_probe_stable_region_start = max(0, black_probe_closest_to_zero_index - window_size // 2)
-    black_probe_stable_region_end = black_probe_stable_region_start + window_size
-
-    white_probe_stable_region_start = max(0, white_probe_closest_to_zero_index - window_size // 2)
-    white_probe_stable_region_end = white_probe_stable_region_start + window_size
-
-    # Ensure the stable region is within the bounds of the data
-    black_probe_stable_region_end = min(black_probe_stable_region_end, len(data))
-    white_probe_stable_region_end = min(white_probe_stable_region_end, len(data))
-
-    # Compute the offset
-    black_probe_offset = data['Black_Probe_Temperature'][black_probe_stable_region_start:black_probe_stable_region_end].mean()
-    white_probe_offset = data['White_Probe_Temperature'][white_probe_stable_region_start:white_probe_stable_region_end].mean()
-
-    return black_probe_offset, white_probe_offset
-
-# Define the paths
-directory = '/Users/janoschbeer/Library/Mobile Documents/com~apple~CloudDocs/PhD/data/fieldwork_data/Polythermal_Glaciers_Survey_202408/NTC/NTC_calibration_data/'
-file_path = directory + '#16_ice_bath_0deg_offset.csv'
-cleaned_file_path = directory + '/cleaned_files/' + file_path.split('/')[-1]
-
-# Clean the CSV file from '�C'
-clean_csv_file(file_path, cleaned_file_path)
-
-# Cut rising temperatures from the cleaned file in order to exclude the phase out of the ice bath
-cut_file_path = directory + '/cut_files/' + file_path.split('/')[-1]
-cut_rising_temperatures(cleaned_file_path, cut_file_path)
-
-# Compute the 0-degree offset for the NTC sensors
-sorted_files = sorted(os.listdir(cut_files_dir)) # Sort the files in the directory
-# Loop over all files in the directory
-for filename in sorted_files:
-    if filename.startswith("#"):
-        # Compute the file path
-        file_path = os.path.join(cut_files_dir, filename)
-        
-        # Compute the 0-degree offset
-        black_probe_offset, white_probe_offset = calculate_0_degree_offset(file_path)
-        
-        # Save the offsets to a text file in the NTC_calibration_data folder
-        with open(os.path.join(directory, 'computed_offsets.txt'), 'a') as file:
-            file.write(f'Logger: {filename[1:3]}\n')
-            file.write(f'White Probe Offset: {white_probe_offset}\n')
-            file.write(f'Black Probe Offset: {black_probe_offset}\n\n')
+    # Filter the data to include only values below 10 degrees
+    data_below_10 = data[data < 10]
+    
+    # Calculate the rolling mean and standard deviation to identify the stable period
+    rolling_mean = data_below_10.rolling(window=window).mean()
+    rolling_std = data_below_10.rolling(window=window).std()
+    
+    # Identify the stable period where the standard deviation is below the threshold
+    stable_period = rolling_std < threshold
+    
+    # Filter the data to include only the stable period
+    stable_data = data_below_10[stable_period]
+    
+    # Calculate the mean temperature during the stable period
+    zero_degree_offset = stable_data.median()
+    
+    return zero_degree_offset, stable_data.index
