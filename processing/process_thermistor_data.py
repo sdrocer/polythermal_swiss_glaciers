@@ -228,7 +228,7 @@ class ThermistorDataPlotter:
         title_with_underscores = title.replace(' ', '_').replace('/', '').replace('-', '_')
         plt.savefig(savepath + title_with_underscores + '.png')
 
-    def plot_multiple_ntc_boreholes(self, savepath, depths, borehole_labels, title=None, lower_y_limit=-1, legend_loc='lower right'):
+    def plot_multiple_ntc_boreholes(self, savepath, depths, borehole_labels, title=None, lower_y_limit=-1, legend_loc='lower right', calibrate=False, zero_deg_offsets=None):
         if self.file_paths[0] is not None:
             ntc_thermistor1 = ThermistorData(self.file_path, self.delimiter, self.measurement_depth)
             ntc_thermistor_data1 = ntc_thermistor1.get_ntc_data()
@@ -242,6 +242,17 @@ class ThermistorDataPlotter:
             deployment_date = ntc_thermistor_data2['TIME'].min() # set the deployment date to the first date of the second timeseries
         else:
             ntc_thermistor_data2 = pd.DataFrame()
+
+        # apply 0-degree offsets if calibration mode is activated
+        if calibrate:
+            if self.file_paths[0] is not None:
+                (black_probe_offset, white_probe_offset) = zero_deg_offsets[0]
+                ntc_thermistor_data1['Black Probe Temperature'] = ntc_thermistor_data1['Black Probe Temperature'] - black_probe_offset
+                ntc_thermistor_data1['White Probe Temperature'] = ntc_thermistor_data1['White Probe Temperature'] - white_probe_offset
+            if self.file_paths[1] is not None:
+                (black_probe_offset, white_probe_offset) = zero_deg_offsets[1]
+                ntc_thermistor_data2['Black Probe Temperature'] = ntc_thermistor_data2['Black Probe Temperature'] - black_probe_offset
+                ntc_thermistor_data2['White Probe Temperature'] = ntc_thermistor_data2['White Probe Temperature'] - white_probe_offset
 
         # Create figure and axis with the specified ratio
         fig_ratio = 136.446 / 115.986
@@ -316,37 +327,37 @@ class ThermistorDataPlotter:
         ntc_thermistor = ThermistorData(self.file_path, self.delimiter)
         ntc_thermistor_data = ntc_thermistor.get_ntc_data()
 
-        # Calculate the 0-degree offset for the Shallow and Deep probes
-        deep_probe_offset, stable_indices_deep = calculate_zero_degree_offset(ntc_thermistor_data['Black Probe Temperature'])
-        shallow_probe_offset, stable_indices_shallow = calculate_zero_degree_offset(ntc_thermistor_data['White Probe Temperature'])
+        # Calculate the 0-degree offset for the Black and White probes
+        black_probe_offset, stable_indices_black = calculate_zero_degree_offset(ntc_thermistor_data['Black Probe Temperature'])
+        white_probe_offset, stable_indices_white = calculate_zero_degree_offset(ntc_thermistor_data['White Probe Temperature'])
 
         # Get the time of the stable period
-        stable_period_deep_start = ntc_thermistor_data['TIME'].iloc[stable_indices_deep[0]]
-        stable_period_deep_end = ntc_thermistor_data['TIME'].iloc[stable_indices_deep[-1]]
-        stable_period_shallow_start = ntc_thermistor_data['TIME'].iloc[stable_indices_shallow[0]]
-        stable_period_shallow_end = ntc_thermistor_data['TIME'].iloc[stable_indices_shallow[-1]]
+        stable_period_black_start = ntc_thermistor_data['TIME'].iloc[stable_indices_black[0]]
+        stable_period_black_end = ntc_thermistor_data['TIME'].iloc[stable_indices_black[-1]]
+        stable_period_white_start = ntc_thermistor_data['TIME'].iloc[stable_indices_white[0]]
+        stable_period_white_end = ntc_thermistor_data['TIME'].iloc[stable_indices_white[-1]]
 
         # adjust figure size based on legend size
-        plt.figure(figsize=(12, 7), dpi=300)
+        plt.figure(figsize=(12, 8.5), dpi=300)
 
         # plot the ntc data
-        plt.plot(ntc_thermistor_data['TIME'], ntc_thermistor_data['Black Probe Temperature'], linewidth=4, alpha=0.6, label='Deep Probe')
-        plt.plot(ntc_thermistor_data['TIME'], ntc_thermistor_data['White Probe Temperature'], linewidth=4, alpha=0.6, label='Shallow Probe')
+        plt.plot(ntc_thermistor_data['TIME'], ntc_thermistor_data['Black Probe Temperature'], linewidth=4, alpha=0.6, label='Black Probe (Gemini)')
+        plt.plot(ntc_thermistor_data['TIME'], ntc_thermistor_data['White Probe Temperature'], linewidth=4, alpha=0.6, label='White Probe (Gemini)')
 
         # plot the reference geoprecision thermistor chain data
-        plt.plot(thermistor_chain_data['TIME'], thermistor_chain_data['10.0 m'], linewidth=4, alpha=0.6, label='Geoprecision thermistor', color='black')
+        plt.plot(thermistor_chain_data['TIME'], thermistor_chain_data['10.0 m'], linewidth=4, alpha=0.6, label='Thermistor chain (Geoprecision)', color='black')
 
-        # Mark the stable period for Deep Probe
-        plt.axvline(stable_period_deep_start, color='tab:blue', linestyle='-', linewidth=2)
-        plt.axvline(stable_period_deep_end, color='tab:blue', linestyle='-', linewidth=2)
-        plt.text(stable_period_deep_start, y_limits[0], 'Stable Start', color='tab:blue', fontsize=14, verticalalignment='bottom', horizontalalignment='right', rotation=45)
-        plt.text(stable_period_deep_end, y_limits[0], 'Stable End', color='tab:blue', fontsize=14, verticalalignment='bottom', horizontalalignment='right', rotation=45)
+        # Mark the stable period for Black Probe
+        plt.axvline(stable_period_black_start, color='tab:blue', linestyle='-', linewidth=2)
+        plt.axvline(stable_period_black_end, color='tab:blue', linestyle='-', linewidth=2)
+        plt.text(stable_period_black_start, y_limits[0], 'Stable Start', color='tab:blue', fontsize=14, verticalalignment='bottom', horizontalalignment='right', rotation=45)
+        plt.text(stable_period_black_end, y_limits[0], 'Stable End', color='tab:blue', fontsize=14, verticalalignment='bottom', horizontalalignment='right', rotation=45)
 
-        # Mark the stable period for Shallow Probe
-        plt.axvline(stable_period_shallow_start, color='tab:orange', linestyle='-', linewidth=2)
-        plt.axvline(stable_period_shallow_end, color='tab:orange', linestyle='-', linewidth=2)
-        plt.text(stable_period_shallow_start, y_limits[0], 'Stable Start', color='tab:orange', fontsize=14, verticalalignment='bottom', horizontalalignment='right', rotation=45)
-        plt.text(stable_period_shallow_end, y_limits[0], 'Stable End', color='tab:orange', fontsize=14, verticalalignment='bottom', horizontalalignment='right', rotation=45)
+        # Mark the stable period for White Probe
+        plt.axvline(stable_period_white_start, color='tab:orange', linestyle='-', linewidth=2)
+        plt.axvline(stable_period_white_end, color='tab:orange', linestyle='-', linewidth=2)
+        plt.text(stable_period_white_start, y_limits[0], 'Stable Start', color='tab:orange', fontsize=14, verticalalignment='bottom', horizontalalignment='right', rotation=45)
+        plt.text(stable_period_white_end, y_limits[0], 'Stable End', color='tab:orange', fontsize=14, verticalalignment='bottom', horizontalalignment='right', rotation=45)
 
         # format the plot
         plt.xlabel('Time')
@@ -359,12 +370,19 @@ class ThermistorDataPlotter:
 
         self.format_plot(title)
 
-        # Draw a horizontal line at the 0°C offset for the Deep and Shallow probe
-        plt.axhline(y=deep_probe_offset, color='blue', linestyle='dotted', linewidth=2, label=f'Deep Probe 0°C Offset: {deep_probe_offset:.2f}°C')
-        plt.axhline(y=shallow_probe_offset, color='orange', linestyle='dotted', linewidth=2, label=f'Shallow Probe 0°C Offset: {shallow_probe_offset:.2f}°C')
+        # Draw a horizontal line at the 0°C offset for the Black and White probe
+        plt.axhline(y=black_probe_offset, color='blue', linestyle='dotted', linewidth=2, label=f'Black Probe 0°C Offset: {black_probe_offset:.2f}°C')
+        plt.axhline(y=white_probe_offset, color='orange', linestyle='dotted', linewidth=2, label=f'White Probe 0°C Offset: {white_probe_offset:.2f}°C')
 
-        plt.legend(fontsize=22, frameon=True, fancybox=False, edgecolor='black', framealpha=1, facecolor='white', loc='upper center', bbox_to_anchor=(0.5, -0.3), ncol=2)
+        plt.legend(fontsize=22, frameon=True, fancybox=False, edgecolor='black', framealpha=1, facecolor='white', loc='upper center', bbox_to_anchor=(0.5, -0.45), ncol=2)
+
+        # Adjust layout to make room for the legend
+        plt.tight_layout()
 
         # save the plot
         title_with_underscores = title.replace(' ', '_').replace('/', '').replace('-', '_')
         plt.savefig(savepath + title_with_underscores + '.png')
+
+        zero_degree_offsets = (black_probe_offset, white_probe_offset)
+
+        return zero_degree_offsets
