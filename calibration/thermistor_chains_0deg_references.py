@@ -10,6 +10,7 @@ path_20m_chain = '/Users/janoschbeer/Library/Mobile Documents/com~apple~CloudDoc
 path_10m_chain_11_16 = '/Users/janoschbeer/Library/Mobile Documents/com~apple~CloudDocs/PhD/data/fieldwork_data/Polythermal_Glaciers/thermistor_chains/calibration_runs/A5389E_ice_bath_logger_11_16.csv'
 path_20m_chain_11_16 = '/Users/janoschbeer/Library/Mobile Documents/com~apple~CloudDocs/PhD/data/fieldwork_data/Polythermal_Glaciers/thermistor_chains/calibration_runs/A53964_ice_bath_logger_11_16.csv'
 
+
 chain_10m = ThermistorData(path_10m_chain, ',', 10)
 chain_20m = ThermistorData(path_20m_chain, ',', 20)
 chain_10m_11_16 = ThermistorData(path_10m_chain_11_16, ',', 10)
@@ -34,6 +35,24 @@ end_time_4th_ice_bath   = '27.08.2024 13:16:00'
 
 data_10m_chain_4th_ice_bath = chain_10m_11_16.get_chain_data(start_time_4th_ice_bath, end_time_4th_ice_bath)
 data_20m_chain_4th_ice_bath = chain_20m_11_16.get_chain_data(start_time_4th_ice_bath, end_time_4th_ice_bath)
+
+## Reliability experiments ##
+#---------------------------#
+
+# create a ThermistorData object for reliability experiments
+path_10m_chain_reliability = '/Users/janoschbeer/Library/Mobile Documents/com~apple~CloudDocs/PhD/data/fieldwork_data/Polythermal_Glaciers/NTC/NTC_calibration_data/NTC_reliability_experiments/Experiment1_20250130/Thermistor_chains/A5389E_20250130181214.csv'
+path_20m_chain_reliability = '/Users/janoschbeer/Library/Mobile Documents/com~apple~CloudDocs/PhD/data/fieldwork_data/Polythermal_Glaciers/NTC/NTC_calibration_data/NTC_reliability_experiments/Experiment1_20250130/Thermistor_chains/A53964_20250130181214.csv'
+
+# create a ThermistorData object
+chain_10m_reliability = ThermistorData(path_10m_chain_reliability, ',', 10)
+chain_20m_reliability = ThermistorData(path_20m_chain_reliability, ',', 20)
+
+# read the data for loggers 13 till 16 (reliability experiment)
+start_time_reliability = '30.01.2025 15:15:00'
+end_time_reliability   = '30.01.2025 18:15:00'
+
+data_10m_chain_reliability = chain_10m_reliability.get_chain_data(start_time_reliability, end_time_reliability)
+data_20m_chain_reliability = chain_20m_reliability.get_chain_data(start_time_reliability, end_time_reliability)
 
 # # compute the 0-degree offset of the thermistor chains parallel to NTC loggers 1 till 8
 # offset_10m_2nd_ice_bath =  data_10m_2nd_ice_bath['10.0 m'].mean() # 10m thermistor chain offset

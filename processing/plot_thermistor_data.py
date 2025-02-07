@@ -14,7 +14,7 @@ from calibration.thermistor_chains_0deg_references import *
 """
 
 # set the path to the data
-cal_path  = '/Users/janoschbeer/Library/Mobile Documents/com~apple~CloudDocs/PhD/data/fieldwork_data/Polythermal_Glaciers/NTC/NTC_calibration_data/'
+cal_path  = '/Users/janoschbeer/Library/Mobile Documents/com~apple~CloudDocs/PhD/data/fieldwork_data/Polythermal_Glaciers/NTC/NTC_calibration_data/NTC_reliability_experiments'
 temp_path = '/Users/janoschbeer/Library/Mobile Documents/com~apple~CloudDocs/PhD/data/fieldwork_data/Polythermal_Glaciers/NTC/NTC_temperature_data/'
 
 # set the path for the output
@@ -125,3 +125,23 @@ chessjen.plot_multiple_ntc_boreholes(savepath=output_path + 'icetemp_results/' ,
 alphubel.plot_multiple_ntc_boreholes(savepath=output_path + 'icetemp_results/' , title='Alphubel South 08/2024-10/2024 calibrated'      , depths=[8.0,13.0,9.0,14.0]    , borehole_labels=['BH9','BH10'], lower_y_limit=-3.5, calibrate=True, zero_deg_offsets=[zero_deg_offsets_logger9,zero_deg_offsets_logger10])
 corvatsch.plot_multiple_ntc_boreholes(savepath=output_path + 'icetemp_results/', title='Corvatsch 08/2024-10/2024 calibrated'           , depths=[2.0,7.0,4.3,9.3]      , borehole_labels=['BH11','BH12'], lower_y_limit=-3.5, calibrate=True, zero_deg_offsets=[zero_deg_offsets_logger11,zero_deg_offsets_logger12])
 
+## Plot reliability experiments ##
+# ------------------------------ #
+
+# set the paths to the reliability experiment data
+logger_13_dir = cal_path + '/Experiment1_20250130/NTCs/13_ice_bath_rel_exp1.csv'
+logger_14_dir = cal_path + '/Experiment1_20250130/NTCs/14_ice_bath_rel_exp1.csv'
+logger_15_dir = cal_path + '/Experiment1_20250130/NTCs/15_ice_bath_rel_exp1.csv'
+logger_16_dir = cal_path + '/Experiment1_20250130/NTCs/16_ice_bath_rel_exp1.csv'
+
+# create a ThermistorDataPlotter object per logger
+logger_13 = ThermistorDataPlotter(logger_13_dir, delimiter=',')
+logger_14 = ThermistorDataPlotter(logger_14_dir, delimiter=',')
+logger_15 = ThermistorDataPlotter(logger_15_dir, delimiter=',')
+logger_16 = ThermistorDataPlotter(logger_16_dir, delimiter=',')
+
+# plot the data per logger and return the 0 degree offsets
+zero_deg_offsets_logger13 = logger_13.plot_ntc_icebath_calibration(data_10m_chain_reliability, savepath=output_path + 'thermistor_calibration/', title='Logger #13 - 0deg offset in ice bath')
+zero_deg_offsets_logger14 = logger_14.plot_ntc_icebath_calibration(data_10m_chain_reliability, savepath=output_path + 'thermistor_calibration/', title='Logger #14 - 0deg offset in ice bath')
+zero_deg_offsets_logger15 = logger_15.plot_ntc_icebath_calibration(data_10m_chain_reliability, savepath=output_path + 'thermistor_calibration/', title='Logger #15 - 0deg offset in ice bath')
+zero_deg_offsets_logger16 = logger_16.plot_ntc_icebath_calibration(data_10m_chain_reliability, savepath=output_path + 'thermistor_calibration/', title='Logger #16 - 0deg offset in ice bath')
