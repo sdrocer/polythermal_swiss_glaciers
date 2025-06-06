@@ -40,32 +40,50 @@ data_20m_chain_4th_ice_bath = chain_20m_11_16.get_chain_data(start_time_4th_ice_
 #---------------------------#
 
 # create a ThermistorData object for reliability experiments
-path_10m_chain_reliability = '/Users/janoschbeer/Library/Mobile Documents/com~apple~CloudDocs/PhD/data/fieldwork_data/Polythermal_Glaciers/NTC/NTC_calibration_data/NTC_reliability_experiments/Experiment1_20250130/Thermistor_chains/A5389E_20250130181214.csv'
-path_20m_chain_reliability = '/Users/janoschbeer/Library/Mobile Documents/com~apple~CloudDocs/PhD/data/fieldwork_data/Polythermal_Glaciers/NTC/NTC_calibration_data/NTC_reliability_experiments/Experiment1_20250130/Thermistor_chains/A53964_20250130181214.csv'
+
+# Experiment 1: 30.01.2025
+path_10m_chain_reliability_exp1 = '/Users/janoschbeer/Library/Mobile Documents/com~apple~CloudDocs/PhD/data/fieldwork_data/Polythermal_Glaciers/NTC/NTC_calibration_data/NTC_reliability_experiments/Experiment1_20250130/Thermistor_chains/A5389E_20250130181214.csv'
+path_20m_chain_reliability_exp1 = '/Users/janoschbeer/Library/Mobile Documents/com~apple~CloudDocs/PhD/data/fieldwork_data/Polythermal_Glaciers/NTC/NTC_calibration_data/NTC_reliability_experiments/Experiment1_20250130/Thermistor_chains/A53964_20250130180705.csv'
 
 # create a ThermistorData object
-chain_10m_reliability = ThermistorData(path_10m_chain_reliability, ',', 10)
-chain_20m_reliability = ThermistorData(path_20m_chain_reliability, ',', 20)
+chain_10m_reliability_exp1 = ThermistorData(path_10m_chain_reliability_exp1, ',', 10)
+chain_20m_reliability_exp1 = ThermistorData(path_20m_chain_reliability_exp1, ',', 20)
 
 # read the data for loggers 13 till 16 (reliability experiment)
-start_time_reliability = '30.01.2025 15:15:00'
-end_time_reliability   = '30.01.2025 18:15:00'
+start_time_reliability_exp1 = '30.01.2025 15:15:00'
+end_time_reliability_exp1   = '30.01.2025 18:15:00'
 
-data_10m_chain_reliability = chain_10m_reliability.get_chain_data(start_time_reliability, end_time_reliability)
-data_20m_chain_reliability = chain_20m_reliability.get_chain_data(start_time_reliability, end_time_reliability)
+data_10m_chain_reliability_exp1 = chain_10m_reliability_exp1.get_chain_data(start_time_reliability_exp1, end_time_reliability_exp1)
+data_20m_chain_reliability_exp1 = chain_20m_reliability_exp1.get_chain_data(start_time_reliability_exp1, end_time_reliability_exp1)
 
-# # compute the 0-degree offset of the thermistor chains parallel to NTC loggers 1 till 8
-# offset_10m_2nd_ice_bath =  data_10m_2nd_ice_bath['10.0 m'].mean() # 10m thermistor chain offset
-# sample_size_10m_2nd_ice_bath = data_10m_2nd_ice_bath['10.0 m'].count() # sample size
+# --------------------------#
+# Experiment 2: 04.03.2025
+path_10m_chain_reliability_exp2 = '/Users/janoschbeer/Library/Mobile Documents/com~apple~CloudDocs/PhD/data/fieldwork_data/Polythermal_Glaciers/NTC/NTC_calibration_data/NTC_reliability_experiments/Experiment2_20250304/Thermistor_chains/A5389E_20250304121907.csv'
+path_20m_chain_reliability_exp2 = '/Users/janoschbeer/Library/Mobile Documents/com~apple~CloudDocs/PhD/data/fieldwork_data/Polythermal_Glaciers/NTC/NTC_calibration_data/NTC_reliability_experiments/Experiment2_20250304/Thermistor_chains/A53964_20250304121405.csv'
 
-# # compute the 0-degree offset of the thermistor chains parallel to NTC loggers 9 till 10
-# offset_10m_3rd_ice_bath =  data_10m_3rd_ice_bath['10.0 m'].mean() # 10m thermistor chain offset
-# offset_20m_3rd_ice_bath =  data_20m_3rd_ice_bath['20.0 m'].mean() # 20m thermistor chain offset
-# sample_size_10m_3rd_ice_bath = data_10m_3rd_ice_bath['10.0 m'].count() # sample size
-# sample_size_20m_3rd_ice_bath = data_20m_3rd_ice_bath['20.0 m'].count() # sample size
+# create a ThermistorData object
+chain_10m_reliability_exp2 = ThermistorData(path_10m_chain_reliability_exp2, ',', 10)
+chain_20m_reliability_exp2 = ThermistorData(path_20m_chain_reliability_exp2, ',', 20)
 
-# # compute the 0-degree offset of the thermistor chains parallel to NTC loggers 11 till 16
-# offset_10m_4th_ice_bath =  data_10m_4th_ice_bath['10.0 m'].mean() # 10m thermistor chain offset
-# offset_20m_4th_ice_bath =  data_20m_4th_ice_bath['20.0 m'].mean() # 20m thermistor chain offset
-# sample_size_10m_4th_ice_bath = data_10m_4th_ice_bath['10.0 m'].count() # sample size
-# sample_size_20m_4th_ice_bath = data_20m_4th_ice_bath['20.0 m'].count() # sample size
+# read the data for loggers 13 till 16 (reliability experiment)
+start_time_reliability_exp2 = '04.03.2025 09:30:00'
+end_time_reliability_exp2   = '04.03.2025 12:30:00'
+
+data_10m_chain_reliability_exp2 = chain_10m_reliability_exp2.get_chain_data(start_time_reliability_exp2, end_time_reliability_exp2)
+data_20m_chain_reliability_exp2 = chain_20m_reliability_exp2.get_chain_data(start_time_reliability_exp2, end_time_reliability_exp2)
+
+# --------------------------#
+# Experiment 3: 03.06.2025
+path_10m_chain_reliability_exp3 = '/Users/janoschbeer/Library/Mobile Documents/com~apple~CloudDocs/PhD/data/fieldwork_data/Polythermal_Glaciers/NTC/NTC_calibration_data/NTC_reliability_experiments/Experiment3_20250603/Thermistor_chains/A5389E_20250603153411.csv'
+path_20m_chain_reliability_exp3 = '/Users/janoschbeer/Library/Mobile Documents/com~apple~CloudDocs/PhD/data/fieldwork_data/Polythermal_Glaciers/NTC/NTC_calibration_data/NTC_reliability_experiments/Experiment3_20250603/Thermistor_chains/A53964_20250603153704.csv'
+
+# create a ThermistorData object
+chain_10m_reliability_exp3 = ThermistorData(path_10m_chain_reliability_exp3, ',', 10)
+chain_20m_reliability_exp3 = ThermistorData(path_20m_chain_reliability_exp3, ',', 20)
+
+# read the data for loggers 13 till 16 (reliability experiment)
+start_time_reliability_exp3 = '03.06.2025 13:15:00'
+end_time_reliability_exp3   = '03.06.2025 15:30:00'
+
+data_10m_chain_reliability_exp3 = chain_10m_reliability_exp3.get_chain_data(start_time_reliability_exp3, end_time_reliability_exp3)
+data_20m_chain_reliability_exp3 = chain_20m_reliability_exp3.get_chain_data(start_time_reliability_exp3, end_time_reliability_exp3)
