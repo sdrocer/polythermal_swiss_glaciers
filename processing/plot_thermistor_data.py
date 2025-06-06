@@ -128,20 +128,62 @@ corvatsch.plot_multiple_ntc_boreholes(savepath=output_path + 'icetemp_results/',
 ## Plot reliability experiments ##
 # ------------------------------ #
 
+# Experiment 1 ----------------- # 
+
 # set the paths to the reliability experiment data
-logger_13_dir = cal_path + '/Experiment1_20250130/NTCs/13_ice_bath_rel_exp1.csv'
-logger_14_dir = cal_path + '/Experiment1_20250130/NTCs/14_ice_bath_rel_exp1.csv'
-logger_15_dir = cal_path + '/Experiment1_20250130/NTCs/15_ice_bath_rel_exp1.csv'
-logger_16_dir = cal_path + '/Experiment1_20250130/NTCs/16_ice_bath_rel_exp1.csv'
+logger_13_dir_exp1 = cal_path + '/Experiment1_20250130/NTCs/13_ice_bath_rel_exp1.csv'
+logger_14_dir_exp1 = cal_path + '/Experiment1_20250130/NTCs/14_ice_bath_rel_exp1.csv'
+logger_15_dir_exp1 = cal_path + '/Experiment1_20250130/NTCs/15_ice_bath_rel_exp1.csv'
+logger_16_dir_exp1 = cal_path + '/Experiment1_20250130/NTCs/16_ice_bath_rel_exp1.csv'
 
 # create a ThermistorDataPlotter object per logger
-logger_13 = ThermistorDataPlotter(logger_13_dir, delimiter=',')
-logger_14 = ThermistorDataPlotter(logger_14_dir, delimiter=',')
-logger_15 = ThermistorDataPlotter(logger_15_dir, delimiter=',')
-logger_16 = ThermistorDataPlotter(logger_16_dir, delimiter=',')
+logger_13_exp1 = ThermistorDataPlotter(logger_13_dir_exp1, delimiter=',')
+logger_14_exp1 = ThermistorDataPlotter(logger_14_dir_exp1, delimiter=',')
+logger_15_exp1 = ThermistorDataPlotter(logger_15_dir_exp1, delimiter=',')
+logger_16_exp1 = ThermistorDataPlotter(logger_16_dir_exp1, delimiter=',')
 
 # plot the data per logger and return the 0 degree offsets
-zero_deg_offsets_logger13 = logger_13.plot_ntc_icebath_calibration(data_10m_chain_reliability, savepath=output_path + 'thermistor_calibration/', title='Logger #13 - 0deg offset in ice bath')
-zero_deg_offsets_logger14 = logger_14.plot_ntc_icebath_calibration(data_10m_chain_reliability, savepath=output_path + 'thermistor_calibration/', title='Logger #14 - 0deg offset in ice bath')
-zero_deg_offsets_logger15 = logger_15.plot_ntc_icebath_calibration(data_10m_chain_reliability, savepath=output_path + 'thermistor_calibration/', title='Logger #15 - 0deg offset in ice bath')
-zero_deg_offsets_logger16 = logger_16.plot_ntc_icebath_calibration(data_10m_chain_reliability, savepath=output_path + 'thermistor_calibration/', title='Logger #16 - 0deg offset in ice bath')
+zero_deg_offsets_logger13_exp1 = logger_13_exp1.plot_ntc_icebath_calibration(data_10m_chain_reliability_exp1, savepath=output_path + 'thermistor_calibration/', title='Logger #13 - 0deg offset in ice bath - Exp1')
+zero_deg_offsets_logger14_exp1 = logger_14_exp1.plot_ntc_icebath_calibration(data_10m_chain_reliability_exp1, savepath=output_path + 'thermistor_calibration/', title='Logger #14 - 0deg offset in ice bath - Exp1')
+zero_deg_offsets_logger15_exp1 = logger_15_exp1.plot_ntc_icebath_calibration(data_10m_chain_reliability_exp1, savepath=output_path + 'thermistor_calibration/', title='Logger #15 - 0deg offset in ice bath - Exp1')
+zero_deg_offsets_logger16_exp1 = logger_16_exp1.plot_ntc_icebath_calibration(data_10m_chain_reliability_exp1, savepath=output_path + 'thermistor_calibration/', title='Logger #16 - 0deg offset in ice bath - Exp1')
+
+# Experiment 2 ----------------- # 
+
+# set the paths to the reliability experiment data
+logger_13_dir_exp2 = cal_path + '/Experiment2_20250304/NTCs/13_ice_bath_rel_exp2.csv'
+logger_14_dir_exp2 = cal_path + '/Experiment2_20250304/NTCs/14_ice_bath_rel_exp2.csv'
+logger_15_dir_exp2 = cal_path + '/Experiment2_20250304/NTCs/15_ice_bath_rel_exp2.csv'
+logger_16_dir_exp2 = cal_path + '/Experiment2_20250304/NTCs/16_ice_bath_rel_exp2.csv'
+
+# create a ThermistorDataPlotter object per logger
+logger_13_exp2 = ThermistorDataPlotter(logger_13_dir_exp2, delimiter=',')
+logger_14_exp2 = ThermistorDataPlotter(logger_14_dir_exp2, delimiter=',')
+logger_15_exp2 = ThermistorDataPlotter(logger_15_dir_exp2, delimiter=',')
+logger_16_exp2 = ThermistorDataPlotter(logger_16_dir_exp2, delimiter=',')
+
+# plot the data per logger and return the 0 degree offsets
+zero_deg_offsets_logger13_exp2 = logger_13_exp2.plot_ntc_icebath_calibration(data_10m_chain_reliability_exp2, savepath=output_path + 'thermistor_calibration/', title='Logger #13 - 0deg offset in ice bath - Exp2')
+zero_deg_offsets_logger14_exp2 = logger_14_exp2.plot_ntc_icebath_calibration(data_10m_chain_reliability_exp2, savepath=output_path + 'thermistor_calibration/', title='Logger #14 - 0deg offset in ice bath - Exp2')
+zero_deg_offsets_logger15_exp2 = logger_15_exp2.plot_ntc_icebath_calibration(data_10m_chain_reliability_exp2, savepath=output_path + 'thermistor_calibration/', title='Logger #15 - 0deg offset in ice bath - Exp2')  
+zero_deg_offsets_logger16_exp2 = logger_16_exp2.plot_ntc_icebath_calibration(data_10m_chain_reliability_exp2, savepath=output_path + 'thermistor_calibration/', title='Logger #16 - 0deg offset in ice bath - Exp2')
+
+# Experiment 3 ----------------- #
+
+# set the paths to the reliability experiment data
+logger_13_dir_exp3 = cal_path + '/Experiment3_20250603/NTCs/13_ice_bath_rel_exp3.csv'
+logger_14_dir_exp3 = cal_path + '/Experiment3_20250603/NTCs/14_ice_bath_rel_exp3.csv'
+logger_15_dir_exp3 = cal_path + '/Experiment3_20250603/NTCs/15_ice_bath_rel_exp3.csv'
+logger_16_dir_exp3 = cal_path + '/Experiment3_20250603/NTCs/16_ice_bath_rel_exp3.csv'
+
+# create a ThermistorDataPlotter object per logger
+logger_13_exp3 = ThermistorDataPlotter(logger_13_dir_exp3, delimiter=',')
+logger_14_exp3 = ThermistorDataPlotter(logger_14_dir_exp3, delimiter=',')
+logger_15_exp3 = ThermistorDataPlotter(logger_15_dir_exp3, delimiter=',')
+logger_16_exp3 = ThermistorDataPlotter(logger_16_dir_exp3, delimiter=',')
+
+# plot the data per logger and return the 0 degree offsets
+zero_deg_offsets_logger13_exp3 = logger_13_exp3.plot_ntc_icebath_calibration(data_10m_chain_reliability_exp3, savepath=output_path + 'thermistor_calibration/', title='Logger #13 - 0deg offset in ice bath - Exp3')
+zero_deg_offsets_logger14_exp3 = logger_14_exp3.plot_ntc_icebath_calibration(data_10m_chain_reliability_exp3, savepath=output_path + 'thermistor_calibration/', title='Logger #14 - 0deg offset in ice bath - Exp3') 
+zero_deg_offsets_logger15_exp3 = logger_15_exp3.plot_ntc_icebath_calibration(data_10m_chain_reliability_exp3, savepath=output_path + 'thermistor_calibration/', title='Logger #15 - 0deg offset in ice bath - Exp3')
+zero_deg_offsets_logger16_exp3 = logger_16_exp3.plot_ntc_icebath_calibration(data_10m_chain_reliability_exp3, savepath=output_path + 'thermistor_calibration/', title='Logger #16 - 0deg offset in ice bath - Exp3')
