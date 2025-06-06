@@ -42,7 +42,7 @@ class ThermistorData:
                     data_lines.append(line.strip().split(self.delimiter))
 
         self.data = pd.DataFrame(data_lines, columns=columns)
-        self.data['TIME'] = pd.to_datetime(self.data['TIME'], format='%d.%m.%Y %H:%M:%S') + pd.DateOffset(hours=1)
+        self.data['TIME'] = pd.to_datetime(self.data['TIME'], format='%d.%m.%Y %H:%M:%S') + pd.DateOffset(hours=0)
         for col in self.data.columns[2:]:
             self.data[col] = pd.to_numeric(self.data[col], errors='coerce')
 
