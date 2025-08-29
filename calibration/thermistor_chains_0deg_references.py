@@ -5,10 +5,10 @@ os.chdir('/Users/janoschbeer/Library/Mobile Documents/com~apple~CloudDocs/PhD/pr
 from process_thermistor_data import ThermistorData
 
 # create a ThermistorData object
-path_10m_chain = '/Users/janoschbeer/Library/Mobile Documents/com~apple~CloudDocs/PhD/data/fieldwork_data/Polythermal_Glaciers/thermistor_chains/calibration_runs/A5389E_20240822133758.csv'
-path_20m_chain = '/Users/janoschbeer/Library/Mobile Documents/com~apple~CloudDocs/PhD/data/fieldwork_data/Polythermal_Glaciers/thermistor_chains/calibration_runs/A53964_20240822134409.csv'
-path_10m_chain_11_16 = '/Users/janoschbeer/Library/Mobile Documents/com~apple~CloudDocs/PhD/data/fieldwork_data/Polythermal_Glaciers/thermistor_chains/calibration_runs/A5389E_ice_bath_logger_11_16.csv'
-path_20m_chain_11_16 = '/Users/janoschbeer/Library/Mobile Documents/com~apple~CloudDocs/PhD/data/fieldwork_data/Polythermal_Glaciers/thermistor_chains/calibration_runs/A53964_ice_bath_logger_11_16.csv'
+path_10m_chain = '/Users/janoschbeer/Library/Mobile Documents/com~apple~CloudDocs/PhD/data/fieldwork_data/THERMAP_2024_2025/icetemperature_data/thermistor_chains/tinus_chains/calibration_runs/A5389E_20240822133758.csv'
+path_20m_chain = '/Users/janoschbeer/Library/Mobile Documents/com~apple~CloudDocs/PhD/data/fieldwork_data/THERMAP_2024_2025/icetemperature_data/thermistor_chains/tinus_chains/calibration_runs/A53964_20240822134409.csv'
+path_10m_chain_11_16 = '/Users/janoschbeer/Library/Mobile Documents/com~apple~CloudDocs/PhD/data/fieldwork_data/THERMAP_2024_2025/icetemperature_data/thermistor_chains/tinus_chains/calibration_runs/A5389E_ice_bath_logger_11_16.csv'
+path_20m_chain_11_16 = '/Users/janoschbeer/Library/Mobile Documents/com~apple~CloudDocs/PhD/data/fieldwork_data/THERMAP_2024_2025/icetemperature_data/thermistor_chains/tinus_chains/calibration_runs/A53964_ice_bath_logger_11_16.csv'
 
 
 chain_10m = ThermistorData(path_10m_chain, ',', 10)
@@ -42,8 +42,8 @@ data_20m_chain_4th_ice_bath = chain_20m_11_16.get_chain_data(start_time_4th_ice_
 # create a ThermistorData object for reliability experiments
 
 # Experiment 1: 30.01.2025
-path_10m_chain_reliability_exp1 = '/Users/janoschbeer/Library/Mobile Documents/com~apple~CloudDocs/PhD/data/fieldwork_data/Polythermal_Glaciers/NTC/NTC_calibration_data/NTC_reliability_experiments/Experiment1_20250130/Thermistor_chains/A5389E_20250130181214.csv'
-path_20m_chain_reliability_exp1 = '/Users/janoschbeer/Library/Mobile Documents/com~apple~CloudDocs/PhD/data/fieldwork_data/Polythermal_Glaciers/NTC/NTC_calibration_data/NTC_reliability_experiments/Experiment1_20250130/Thermistor_chains/A53964_20250130180705.csv'
+path_10m_chain_reliability_exp1 = '/Users/janoschbeer/Library/Mobile Documents/com~apple~CloudDocs/PhD/data/fieldwork_data/THERMAP_2024_2025/icetemperature_data/NTC_tynitag/calibration_data/NTC_reliability_experiments/Experiment1_20250130/Thermistor_chains/A5389E_20250130181214.csv'
+path_20m_chain_reliability_exp1 = '/Users/janoschbeer/Library/Mobile Documents/com~apple~CloudDocs/PhD/data/fieldwork_data/THERMAP_2024_2025/icetemperature_data/NTC_tynitag/calibration_data/NTC_reliability_experiments/Experiment1_20250130/Thermistor_chains/A53964_20250130180705.csv'
 
 # create a ThermistorData object
 chain_10m_reliability_exp1 = ThermistorData(path_10m_chain_reliability_exp1, ',', 10)
@@ -58,8 +58,8 @@ data_20m_chain_reliability_exp1 = chain_20m_reliability_exp1.get_chain_data(star
 
 # --------------------------#
 # Experiment 2: 04.03.2025
-path_10m_chain_reliability_exp2 = '/Users/janoschbeer/Library/Mobile Documents/com~apple~CloudDocs/PhD/data/fieldwork_data/Polythermal_Glaciers/NTC/NTC_calibration_data/NTC_reliability_experiments/Experiment2_20250304/Thermistor_chains/A5389E_20250304121907.csv'
-path_20m_chain_reliability_exp2 = '/Users/janoschbeer/Library/Mobile Documents/com~apple~CloudDocs/PhD/data/fieldwork_data/Polythermal_Glaciers/NTC/NTC_calibration_data/NTC_reliability_experiments/Experiment2_20250304/Thermistor_chains/A53964_20250304121405.csv'
+path_10m_chain_reliability_exp2 = '/Users/janoschbeer/Library/Mobile Documents/com~apple~CloudDocs/PhD/data/fieldwork_data/THERMAP_2024_2025/icetemperature_data/NTC_tynitag/calibration_data/NTC_reliability_experiments/Experiment2_20250304/Thermistor_chains/A5389E_20250304121907.csv'
+path_20m_chain_reliability_exp2 = '/Users/janoschbeer/Library/Mobile Documents/com~apple~CloudDocs/PhD/data/fieldwork_data/THERMAP_2024_2025/icetemperature_data/NTC_tynitag/calibration_data/NTC_reliability_experiments/Experiment2_20250304/Thermistor_chains/A53964_20250304121405.csv'
 
 # create a ThermistorData object
 chain_10m_reliability_exp2 = ThermistorData(path_10m_chain_reliability_exp2, ',', 10)
@@ -74,8 +74,8 @@ data_20m_chain_reliability_exp2 = chain_20m_reliability_exp2.get_chain_data(star
 
 # --------------------------#
 # Experiment 3: 03.06.2025
-path_10m_chain_reliability_exp3 = '/Users/janoschbeer/Library/Mobile Documents/com~apple~CloudDocs/PhD/data/fieldwork_data/Polythermal_Glaciers/NTC/NTC_calibration_data/NTC_reliability_experiments/Experiment3_20250603/Thermistor_chains/A5389E_20250603153411.csv'
-path_20m_chain_reliability_exp3 = '/Users/janoschbeer/Library/Mobile Documents/com~apple~CloudDocs/PhD/data/fieldwork_data/Polythermal_Glaciers/NTC/NTC_calibration_data/NTC_reliability_experiments/Experiment3_20250603/Thermistor_chains/A53964_20250603153704.csv'
+path_10m_chain_reliability_exp3 = '/Users/janoschbeer/Library/Mobile Documents/com~apple~CloudDocs/PhD/data/fieldwork_data/THERMAP_2024_2025/icetemperature_data/NTC_tynitag/calibration_data/NTC_reliability_experiments/Experiment3_20250603/Thermistor_chains/A5389E_20250603153411.csv'
+path_20m_chain_reliability_exp3 = '/Users/janoschbeer/Library/Mobile Documents/com~apple~CloudDocs/PhD/data/fieldwork_data/THERMAP_2024_2025/icetemperature_data/NTC_tynitag/calibration_data/NTC_reliability_experiments/Experiment3_20250603/Thermistor_chains/A53964_20250603153704.csv'
 
 # create a ThermistorData object
 chain_10m_reliability_exp3 = ThermistorData(path_10m_chain_reliability_exp3, ',', 10)
