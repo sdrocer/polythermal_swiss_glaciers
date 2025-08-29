@@ -1,12 +1,16 @@
 import pandas as pd
 import numpy as np
 import re
+
+# plotting
 import matplotlib.pyplot as plt
+import cmcrameri.cm as cmc
+
 import os
 from matplotlib import dates as mdates
 
 os.chdir('/Users/janoschbeer/Library/Mobile Documents/com~apple~CloudDocs/PhD/projects/asses_swiss_gl_therm_regimes/')
-from calibration.ntc_0deg_calibration import calculate_zero_degree_offset
+from calibration.thermistor_calibration import calculate_zero_degree_offset
 import calibration.thermistor_chains_0deg_references
 
 """
@@ -30,41 +34,38 @@ class ThermistorData:
     
     def get_chain_data(self, start_time, end_time):
         data_lines = []
+        columns = None
         with open(self.file_path, 'r') as file:
-            columns = None
             for line in file:
-                if columns is None:
-                    if line.startswith('NO{0}TIME{0}'.format(self.delimiter)):
-                        columns = line.strip().split(self.delimiter)
-                elif line[0].isdigit():
-                    if self.delimiter == ';':
-                        line = line.replace(',', '.')
-                    data_lines.append(line.strip().split(self.delimiter))
+                line = line.strip()
+                # Detect header line
+                if line.startswith('NO') and 'TIME' in line:
+                    columns = line.split(self.delimiter)
+                    # Simplify columns here
+                    columns = [col.split(':')[0] if col.startswith('#') else col for col in columns]
+                    continue
+                # Skip metadata and empty lines
+                if not line or not line[0].isdigit():
+                    continue
+                # Only collect data if header is set
+                if columns:
+                    data_lines.append(line.split(self.delimiter))
 
-        self.data = pd.DataFrame(data_lines, columns=columns)
-        self.data['TIME'] = pd.to_datetime(self.data['TIME'], format='%d.%m.%Y %H:%M:%S') + pd.DateOffset(hours=0)
-        for col in self.data.columns[2:]:
-            self.data[col] = pd.to_numeric(self.data[col], errors='coerce')
+        # If no data found, return empty DataFrame
+        if not data_lines or not columns:
+            return pd.DataFrame()
 
-        # Convert input times to datetime
+        df = pd.DataFrame(data_lines, columns=columns)
+        df['TIME'] = pd.to_datetime(df['TIME'], format='%d.%m.%Y %H:%M:%S', errors='coerce')
+        for col in df.columns[2:]:
+            df[col] = pd.to_numeric(df[col], errors='coerce')
+
+        # Filter by time range
         start_time = pd.to_datetime(start_time, format='%d.%m.%Y %H:%M:%S')
         end_time = pd.to_datetime(end_time, format='%d.%m.%Y %H:%M:%S')
+        df = df[(df['TIME'] >= start_time) & (df['TIME'] <= end_time)]
 
-        # Filter the DataFrame based on the time range
-        self.data = self.data[(self.data['TIME'] >= start_time) & (self.data['TIME'] <= end_time)]
-
-        # Modify the column names to include depth information
-        num_depth_columns = self.measurement_depth * 2
-        num_thermistor_columns = len(self.data.columns) - num_depth_columns - 4  # Subtract 4 for 'NO', 'TIME', 'TEMP LOGGER' and 'TEMP BATTERY' columns
-
-        self.data.columns = (
-            self.data.columns[:2].tolist()  # 'NO' and 'TIME' columns
-            + [f"# {i}" for i in range(1, num_thermistor_columns + 1)]  # 'Thermistor' columns
-            + [f"{i*0.5:.1f} m" for i in range(1, num_depth_columns + 1)]  # Depth columns
-            + ['TEMP LOGGER', 'TEMP BATTERY']  # 'TEMP LOGGER' and 'TEMP BATTERY' columns
-        )
-
-        return self.data
+        return df
 
     def get_ntc_data(self):
         # Read the CSV file with the correct encoding and skip the first 5 rows
@@ -100,48 +101,230 @@ class ThermistorDataPlotter:
         self.measurement_depth = measurement_depth
 
     def format_plot(self, title, legend_loc='upper right'):
-        # Change the default font to Arial
+        ax = plt.gca()
+        fig = plt.gcf()
+        # Get figure size in inches
+        fig_width, fig_height = fig.get_size_inches()
+        # Use the average of width and height to scale
+        scale = (fig_width + fig_height) / 2
+
+        # Set base sizes
+        base_fontsize = 22
+        base_linewidth = 4
+
+        # Scale font and line sizes
+        self.fontsize = int(base_fontsize * scale / 12)  # 12 is a typical reference width
+        self.linewidth = base_linewidth * scale / 12
+
+        # Set font and line sizes
         plt.rcParams['font.sans-serif'] = 'Arial'
-        plt.xlabel('Time', fontsize=22)
-        plt.ylabel('Ice temperature [°C]', fontsize=22)
-        # plt.title(title, fontsize=22)
-        plt.legend(fontsize=22, frameon=True, fancybox=False, edgecolor='black', framealpha=1, facecolor='white', loc=legend_loc)
-        plt.axhline(y=0, color='k', linestyle='--', linewidth=3)
-        plt.xticks(rotation=45, fontsize=22)  # Rotate x ticks 45 degrees
-        plt.yticks(fontsize=22)
+        plt.rcParams['font.size'] = self.fontsize
+        plt.rcParams['axes.titlesize'] = self.fontsize
+        plt.rcParams['axes.labelsize'] = self.fontsize
+        plt.rcParams['xtick.labelsize'] = self.fontsize
+        plt.rcParams['ytick.labelsize'] = self.fontsize
+        plt.rcParams['legend.fontsize'] = self.fontsize
+        plt.rcParams['lines.linewidth'] = self.linewidth
+
+        # Enforce axis label font size
+        ax.set_xlabel(ax.get_xlabel(), fontsize=self.fontsize)
+        ax.set_ylabel(ax.get_ylabel(), fontsize=self.fontsize)
+        ax.set_title(title if title else '', fontsize=self.fontsize)
+        # Enforce tick label font size
+        ax.tick_params(axis='both', labelsize=self.fontsize)
+        # Enforce line width for all lines
+        for line in ax.get_lines():
+            line.set_linewidth(self.linewidth)
+        # Legend settings
+        handles, labels = ax.get_legend_handles_labels()
+        if len(labels) == 1:
+            pass  # Do not show legend if only one item
+        elif len(labels) > 4:
+            ax.legend(frameon=True, fancybox=False, edgecolor='black', framealpha=1, facecolor='white',
+                    loc='center left', bbox_to_anchor=(1, 0.5), ncol=1, fontsize=self.fontsize)
+        else:
+            ax.legend(frameon=True, fancybox=False, edgecolor='black', framealpha=1, facecolor='white',
+                    loc=legend_loc, ncol=1, fontsize=self.fontsize)
+        # Grid and layout
+        plt.xticks(rotation=45, fontsize=self.fontsize)
+        plt.yticks(fontsize=self.fontsize)
         plt.grid()
         plt.tight_layout()
 
-    def plot_full_geopresition_chain(self, start_time, end_time, savepath, title=None):
+    def plot_full_geoprecision_chain(self, start_time, end_time, savepath, title=None, depth_file=None):
+        import cmcrameri.cm as cmc
         thermistor = ThermistorData(self.file_path, self.delimiter, self.measurement_depth)
         data = thermistor.get_chain_data(start_time, end_time)
         data['TIME'] = pd.to_datetime(data['TIME'])
 
-        # adjust figure size based on legend size
-        plt.figure(dpi=300)  # adjust the values as per your requirement and set dpi for resolution
+        # Load depths if provided
+        depths = {}
+        if depth_file is not None:
+            df_depths = pd.read_csv(depth_file, sep=';', skiprows=1)
+            df_depths = df_depths[df_depths.iloc[:,0].astype(str).str.startswith('#')]
+            last_col = df_depths.columns[5]
+            for _, row in df_depths.iterrows():
+                thermistor_name = row.iloc[0]
+                try:
+                    depth = float(str(row[last_col]).replace(',', '.'))
+                except:
+                    depth = None
+                depths[thermistor_name] = depth
 
-        # plot the data
-        for column in data.columns:
-            if column not in ['NO', 'TIME', 'TEMP LOGGER', 'TEMP BATTERY']:
-                print(column)
-                plt.plot(data['TIME'], data[column], label=column)
+        plt.figure(figsize=(12, 8),dpi=250)
+        exclude_cols = ['NO', 'TIME', 'TEMP LOGGER', 'TEMP BATTERY', 'HK-BAT:V']
+        plot_columns = [col for col in data.columns if col not in exclude_cols]
+        n_cols = len(plot_columns)
+        colors = cmc.batlow(np.linspace(1, 0, n_cols))
 
-        # format the plot
+        for i, column in enumerate(plot_columns):
+            depth = depths.get(column, None)
+            label = f"{depth:.1f} m" if depth is not None else ""
+            plt.plot(data['TIME'], data[column], label=label, color=colors[i])
+
+        # Use the format_plot method for consistent styling
         plt.xlabel('Time')
         plt.ylabel('Temperature [°C]')
-        plt.title(title)
-        plt.legend(loc='center left', bbox_to_anchor=(1, 0.5), title='Depth [m]', ncol=2, fontsize='small')  # Set ncol=2 for two columns
-        plt.xticks(rotation=45)  # Rotate x ticks 45 degrees
-        plt.grid()
-        plt.tight_layout()
-
-        # modify x-axis tick format to show date and time without seconds
-        plt.gca().xaxis.set_major_formatter(mdates.DateFormatter('%m-%d %H:%M'))
-
-        # save the plot
+        plt.axhline(y=0, color='k', linestyle='--')
+        self.format_plot(title, legend_loc='lower left')
+        plt.gca().xaxis.set_major_formatter(mdates.DateFormatter('%m-%d'))
         plt.savefig(savepath)
 
-    def plot_geopresition_thermistor(self, start_time, end_time, depths, savepath, title=None):
+    def plot_stabilized_temperature_profile(self, start_time, end_time, depth_file, savepath, title=None):
+        thermistor = ThermistorData(self.file_path, self.delimiter, self.measurement_depth)
+        data = thermistor.get_chain_data(start_time, end_time)
+        data['TIME'] = pd.to_datetime(data['TIME'])
+
+        # Load depths
+        df_depths = pd.read_csv(depth_file, sep=';', skiprows=1)
+        df_depths = df_depths[df_depths.iloc[:,0].astype(str).str.startswith('#')]
+        last_col = df_depths.columns[5]
+        depths = []
+        stabilized_temps = []
+
+        exclude_cols = ['NO', 'TIME', 'TEMP LOGGER', 'TEMP BATTERY', 'HK-BAT:V']
+        for _, row in df_depths.iterrows():
+            thermistor_name = row.iloc[0]
+            try:
+                depth = float(str(row[last_col]).replace(',', '.'))
+            except:
+                continue
+            if thermistor_name in data.columns and thermistor_name not in exclude_cols:
+                temp_series = data[thermistor_name]
+                offset, stable_indices = calculate_zero_degree_offset(temp_series)
+                # Convert stable_indices to positions if needed
+                positions = [temp_series.index.get_loc(idx) for idx in stable_indices if idx in temp_series.index]
+                if positions:
+                    stabilized_mean = temp_series.iloc[positions].mean()
+                    if not np.isnan(stabilized_mean):
+                        depths.append(depth)
+                        stabilized_temps.append(stabilized_mean)
+
+        if depths and stabilized_temps:
+            depths, stabilized_temps = zip(*sorted(zip(depths, stabilized_temps)))
+
+        plt.figure(figsize=(3,4),dpi=250)
+        plt.plot(stabilized_temps, depths, 'o-', color='k', label='Stabilized Temperature')
+        plt.gca().invert_yaxis()
+        plt.xlabel('Ice Temperature [°C]')
+        plt.ylabel('Depth [m]')
+        plt.title(title if title else 'Temperature Profile')
+        plt.tight_layout()
+        # Use the format_plot method for consistent styling
+        self.format_plot(title)
+        plt.axvline(x=0, color='k', linestyle='--')
+        plt.savefig(savepath)
+
+    def plot_temperature_heatmap(self, start_time, end_time, depth_file, savepath, title=None, cts_threshold=0.05):
+        """
+        Plot a temperature profile heatmap (depth vs. time, color = temperature) and mark the CTS (cold-temperate transition surface).
+        CTS is defined as the depth where temperature is closest to 0°C at each time step.
+        """
+        thermistor = ThermistorData(self.file_path, self.delimiter, self.measurement_depth)
+        data = thermistor.get_chain_data(start_time, end_time)
+        data['TIME'] = pd.to_datetime(data['TIME'])
+
+        # Load depths
+        df_depths = pd.read_csv(depth_file, sep=';', skiprows=1)
+        df_depths = df_depths[df_depths.iloc[:,0].astype(str).str.startswith('#')]
+        last_col = df_depths.columns[5]
+        depths = []
+        temp_columns = []
+        exclude_cols = ['NO', 'TIME', 'TEMP LOGGER', 'TEMP BATTERY', 'HK-BAT:V']
+
+        for _, row in df_depths.iterrows():
+            thermistor_name = row.iloc[0]
+            try:
+                depth = float(str(row[last_col]).replace(',', '.'))
+            except:
+                continue
+            if thermistor_name in data.columns and thermistor_name not in exclude_cols:
+                depths.append(depth)
+                temp_columns.append(thermistor_name)
+
+        # Sort depths and corresponding columns
+        depths, temp_columns = zip(*sorted(zip(depths, temp_columns)))
+        depths = np.array(depths)
+        temp_matrix = data[list(temp_columns)].to_numpy()  # shape: (n_times, n_depths)
+        times = data['TIME'].to_numpy()
+
+        # Interpolate temperature profile to a finer depth grid
+        fine_depths = np.linspace(depths.min(), depths.max(), 200)
+        temp_interp = np.empty((len(times), len(fine_depths)))
+        for i, temp_row in enumerate(temp_matrix):
+            temp_interp[i, :] = np.interp(fine_depths, depths, temp_row)
+
+        # Find CTS for each time step (depth where temp is closest to 0°C)
+        cts_depths = []
+        for temp_row in temp_interp:
+            idx = np.argmin(np.abs(temp_row))
+            # Only mark CTS if temperature is within threshold of 0°C
+            if np.abs(temp_row[idx]) < cts_threshold:
+                cts_depths.append(fine_depths[idx])
+            else:
+                cts_depths.append(np.nan)
+
+        # Plot heatmap
+        plt.figure(figsize=(8, 4), dpi=250)
+        extent = [mdates.date2num(times[0]), mdates.date2num(times[-1]), fine_depths[-1], fine_depths[0]]
+        plt.imshow(
+            temp_interp.T,
+            aspect='auto',
+            cmap=cmc.batlow,
+            extent=extent,
+            vmin=np.nanmin(temp_interp),
+            vmax=np.nanmax(temp_interp),
+            label='Temperature [°C]'  # This label will not show in legend, but can be used for reference
+        )
+
+        plt.xlabel('Time', fontsize=self.fontsize)
+        plt.ylabel('Depth [m]', fontsize=self.fontsize)
+        plt.title(title if title else 'Temperature Profile Heatmap', fontsize=self.fontsize)
+        plt.xticks(fontsize=self.fontsize, rotation=45)
+        plt.yticks(fontsize=self.fontsize)
+        plt.grid()
+
+        # Mark CTS
+        plt.plot(times, cts_depths, color='k', linewidth=self.linewidth, label='CTS (0°C)')
+        handles, labels = plt.gca().get_legend_handles_labels()
+        if len(labels) > 0:
+            plt.legend(frameon=True, fancybox=False, edgecolor='black', framealpha=1, facecolor='white',
+                   loc='upper right', ncol=1, fontsize=self.fontsize)
+
+        # Set x-axis format to month and day only
+        plt.gca().xaxis.set_major_formatter(mdates.DateFormatter('%m-%d'))
+
+        # set format using format_plot
+        self.format_plot(title)
+
+        cbar = plt.colorbar()
+        cbar.set_label('Temperature [°C]', fontsize=self.fontsize)
+        cbar.ax.tick_params(labelsize=self.fontsize-2)
+
+        plt.tight_layout()
+        plt.savefig(savepath)
+
+    def plot_geoprecision_thermistor(self, start_time, end_time, depths, savepath, title=None):
         thermistor = ThermistorData(self.file_path, self.delimiter, self.measurement_depth)
         data = thermistor.get_chain_data(start_time, end_time)
         data['TIME'] = pd.to_datetime(data['TIME'])
@@ -310,12 +493,14 @@ class ThermistorDataPlotter:
                      color=colors_borehole2[1], alpha=0.1)
 
         # format the plot specific to the data
+        plt.xlabel('Time')
+        plt.ylabel('Temperature [°C]')
         plt.ylim(lower_y_limit, 0.4)
         plt.axvline(deployment_date, color='gray', linestyle='solid', linewidth=4)
         plt.text(deployment_date, plt.ylim()[0], 'Deployment', color='gray', fontsize=22, verticalalignment='top', horizontalalignment='right', rotation=45)
-        plt.gca().xaxis.set_major_formatter(mdates.DateFormatter('%m-%d'))
-        plt.gca().xaxis.set_major_locator(mdates.DayLocator(interval=7))  # Set x-ticks to be equally spaced by 1 day
- 
+        plt.gca().xaxis.set_major_formatter(mdates.DateFormatter('%b %Y'))
+        plt.gca().xaxis.set_major_locator(mdates.MonthLocator())  # Set x-ticks to be at the start of each month
+
         # format the plot
         self.format_plot(title, legend_loc)
 
