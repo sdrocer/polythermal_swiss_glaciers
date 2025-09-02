@@ -10,7 +10,7 @@ import os
 from matplotlib import dates as mdates
 
 os.chdir('/Users/janoschbeer/Library/Mobile Documents/com~apple~CloudDocs/PhD/projects/asses_swiss_gl_therm_regimes/')
-from calibration.thermistor_calibration import calculate_zero_degree_offset
+from calibration.thermistor_calibration import *
 import calibration.thermistor_chains_0deg_references
 
 """
@@ -27,10 +27,25 @@ class ThermistorData:
             - geoprecision thermistor chains (FlexGate 2.0 output)
             - NTC thermistors
     """
-    def __init__(self, file_path, delimiter, measurement_depth = None):
-        self.file_path = file_path
+    def __init__(self, file_path, delimiter, measurement_depth=None):
+        if isinstance(file_path, list):
+            self.file_paths = file_path
+            self.file_path = file_path[0]
+        else:
+            self.file_paths = [file_path]
+            self.file_path = file_path
         self.delimiter = delimiter
         self.measurement_depth = measurement_depth
+
+    def calculate_ntc_offsets(self):
+        """
+        Calculates and returns the 0-degree offsets and stable indices for Black and White probes.
+        Returns (black_probe_offset, stable_indices_black, white_probe_offset, stable_indices_white)
+        """
+        df = self.get_ntc_data()
+        black_probe_offset, stable_indices_black = calculate_zero_degree_offset(df['Black Probe Temperature'])
+        white_probe_offset, stable_indices_white = calculate_zero_degree_offset(df['White Probe Temperature'])
+        return (black_probe_offset, stable_indices_black, white_probe_offset, stable_indices_white)
     
     def get_chain_data(self, start_time, end_time):
         data_lines = []
@@ -67,24 +82,51 @@ class ThermistorData:
 
         return df
 
+    def get_chain_data_with_offsets(self, start_time, end_time, offsets):
+        """
+        Returns chain data for the given time range with offsets applied.
+        Uses apply_chain_offsets from thermistor_calibration.py.
+        """
+        df = self.get_chain_data(start_time, end_time)
+        df = apply_chain_offsets(df, offsets)
+        return df
+
     def get_ntc_data(self):
         # Read the CSV file with the correct encoding and skip the first 5 rows
-        self.data = pd.read_csv(self.file_path, sep=self.delimiter, header=None, skiprows=5, 
+        df = pd.read_csv(self.file_path, sep=self.delimiter, header=None, skiprows=5, 
                     names=['Measurement', 'TIME', 'Black Probe Temperature', 'White Probe Temperature'], 
                     encoding='latin1')
         
         # Convert the TIME column to datetime format
-        self.data['TIME'] = pd.to_datetime(self.data['TIME'])
+        df['TIME'] = pd.to_datetime(df['TIME'])
         
         # Remove the special character (�C) from the temperature columns and convert to float
-        self.data['Black Probe Temperature'] = self.data['Black Probe Temperature'].apply(lambda x: re.sub(r'[^0-9.-]', '', x)).astype(float)
-        self.data['White Probe Temperature'] = self.data['White Probe Temperature'].apply(lambda x: re.sub(r'[^0-9.-]', '', x)).astype(float)
+        df['Black Probe Temperature'] = df['Black Probe Temperature'].apply(lambda x: re.sub(r'[^0-9.-]', '', x)).astype(float)
+        df['White Probe Temperature'] = df['White Probe Temperature'].apply(lambda x: re.sub(r'[^0-9.-]', '', x)).astype(float)
         
         # Replace -42.004 with NaN values
-        self.data['Black Probe Temperature'] = self.data['Black Probe Temperature'].replace(-42.004, np.nan)
-        self.data['White Probe Temperature'] = self.data['White Probe Temperature'].replace(-42.004, np.nan)
+        df['Black Probe Temperature'] = df['Black Probe Temperature'].replace(-42.004, np.nan)
+        df['White Probe Temperature'] = df['White Probe Temperature'].replace(-42.004, np.nan)
 
-        return self.data
+        return df
+
+    def get_multiple_ntc_data(self):
+        """
+        Reads NTC data for all file paths in self.file_paths.
+        Returns a list of DataFrames, one per borehole.
+        """
+        ntc_data_list = []
+        for fp in self.file_paths:
+            df = pd.read_csv(fp, sep=self.delimiter, header=None, skiprows=5, 
+                                names=['Measurement', 'TIME', 'Black Probe Temperature', 'White Probe Temperature'], 
+                                encoding='latin1')
+            df['TIME'] = pd.to_datetime(df['TIME'])
+            df['Black Probe Temperature'] = df['Black Probe Temperature'].apply(lambda x: re.sub(r'[^0-9.-]', '', str(x))).astype(float)
+            df['White Probe Temperature'] = df['White Probe Temperature'].apply(lambda x: re.sub(r'[^0-9.-]', '', str(x))).astype(float)
+            df['Black Probe Temperature'] = df['Black Probe Temperature'].replace(-42.004, np.nan)
+            df['White Probe Temperature'] = df['White Probe Temperature'].replace(-42.004, np.nan)
+            ntc_data_list.append(df)
+        return ntc_data_list
 
 class ThermistorDataPlotter:
     """
@@ -151,10 +193,10 @@ class ThermistorDataPlotter:
         plt.grid()
         plt.tight_layout()
 
-    def plot_full_geoprecision_chain(self, start_time, end_time, savepath, title=None, depth_file=None):
+    def plot_full_geoprecision_chain(self, start_time, end_time, offsets, savepath, title=None, depth_file=None):
         import cmcrameri.cm as cmc
         thermistor = ThermistorData(self.file_path, self.delimiter, self.measurement_depth)
-        data = thermistor.get_chain_data(start_time, end_time)
+        data = thermistor.get_chain_data_with_offsets(start_time, end_time, offsets)
         data['TIME'] = pd.to_datetime(data['TIME'])
 
         # Load depths if provided
@@ -190,13 +232,13 @@ class ThermistorDataPlotter:
         plt.gca().xaxis.set_major_formatter(mdates.DateFormatter('%m-%d'))
         plt.savefig(savepath)
 
-    def plot_stabilized_temperature_profile(self, start_time, end_time, depth_file, savepath, title=None):
+    def plot_temperature_profile(self, start_time, end_time, offsets, depth_file, savepath, title=None):
         thermistor = ThermistorData(self.file_path, self.delimiter, self.measurement_depth)
-        data = thermistor.get_chain_data(start_time, end_time)
+        data = thermistor.get_chain_data_with_offsets(start_time, end_time, offsets)
         data['TIME'] = pd.to_datetime(data['TIME'])
 
         # Load depths
-        df_depths = pd.read_csv(depth_file, sep=';', skiprows=1)
+        df_depths = pd.read_csv(depth_file, sep=';', header=0)
         df_depths = df_depths[df_depths.iloc[:,0].astype(str).str.startswith('#')]
         last_col = df_depths.columns[5]
         depths = []
@@ -235,94 +277,81 @@ class ThermistorDataPlotter:
         plt.axvline(x=0, color='k', linestyle='--')
         plt.savefig(savepath)
 
-    def plot_temperature_heatmap(self, start_time, end_time, depth_file, savepath, title=None, cts_threshold=0.05):
+    def plot_multiple_temperature_profiles(self, start_time, end_time, offsets_list, depth_files, labels=None, savepath=None, title=None, ntc_data_list=None, ntc_offsets_list=None):
         """
-        Plot a temperature profile heatmap (depth vs. time, color = temperature) and mark the CTS (cold-temperate transition surface).
-        CTS is defined as the depth where temperature is closest to 0°C at each time step.
+        Plots multiple stabilized temperature profiles in one figure.
+        depth_files: list of depth files (chain and tynitag/NTC)
+        ntc_data_list: list of DataFrames for additional boreholes (tynitag/NTC), each with
+            ['date', 'TIME', 'Black Probe Temperature (corrected)', 'White Probe Temperature (corrected)', 'depth black probe [m]', 'depth white probe [m]']
         """
-        thermistor = ThermistorData(self.file_path, self.delimiter, self.measurement_depth)
-        data = thermistor.get_chain_data(start_time, end_time)
-        data['TIME'] = pd.to_datetime(data['TIME'])
+        plt.figure(figsize=(3, 4), dpi=250)
+        n_profiles = len(self.file_paths)
+        n_ntc = len(ntc_data_list) if ntc_data_list is not None else 0
+        total_profiles = n_profiles + n_ntc
 
-        # Load depths
-        df_depths = pd.read_csv(depth_file, sep=';', skiprows=1)
-        df_depths = df_depths[df_depths.iloc[:,0].astype(str).str.startswith('#')]
-        last_col = df_depths.columns[5]
-        depths = []
-        temp_columns = []
-        exclude_cols = ['NO', 'TIME', 'TEMP LOGGER', 'TEMP BATTERY', 'HK-BAT:V']
+        # Use a single colormap for all profiles (chains + NTC)
+        all_colors = cmc.batlow(np.linspace(0, 1, total_profiles))
+        if labels is None:
+            labels = [f'Profile {i+1}' for i in range(n_profiles)]
 
-        for _, row in df_depths.iterrows():
-            thermistor_name = row.iloc[0]
-            try:
-                depth = float(str(row[last_col]).replace(',', '.'))
-            except:
-                continue
-            if thermistor_name in data.columns and thermistor_name not in exclude_cols:
-                depths.append(depth)
-                temp_columns.append(thermistor_name)
+        # Plot chain profiles
+        for i, (fp, offs, dfile, label) in enumerate(zip(self.file_paths, offsets_list, depth_files[:n_profiles], labels)):
+            df_depths = pd.read_csv(dfile, sep=';', header=0)
+            df_depths = df_depths[df_depths.iloc[:,0].astype(str).str.match(r'#\d+')]
+            depth_col_candidates = [col for col in df_depths.columns if 'depth' in col.lower() and '[m]' in col.lower()]
+            depth_col = depth_col_candidates[0] if depth_col_candidates else df_depths.columns[-1]
+            depths = []
+            stabilized_temps = []
+            exclude_cols = ['NO', 'TIME', 'TEMP LOGGER', 'TEMP BATTERY', 'HK-BAT:V']
+            thermistor = ThermistorData(fp, self.delimiter, self.measurement_depth)
+            data = thermistor.get_chain_data_with_offsets(start_time, end_time, offs)
+            data['TIME'] = pd.to_datetime(data['TIME'])
+            for _, row in df_depths.iterrows():
+                thermistor_name = row.iloc[0]
+                try:
+                    depth = float(str(row[depth_col]).replace(',', '.'))
+                except Exception:
+                    continue
+                if thermistor_name in data.columns and thermistor_name not in exclude_cols:
+                    temp_series = data[thermistor_name]
+                    offset, stable_indices = calculate_zero_degree_offset(temp_series)
+                    positions = [temp_series.index.get_loc(idx) for idx in stable_indices if idx in temp_series.index]
+                    if positions:
+                        stabilized_mean = temp_series.iloc[positions].mean()
+                        if not np.isnan(stabilized_mean):
+                            depths.append(depth)
+                            stabilized_temps.append(stabilized_mean)
+            if depths and stabilized_temps:
+                depths, stabilized_temps = zip(*sorted(zip(depths, stabilized_temps)))
+                plt.plot(stabilized_temps, depths, 'o-', label=label, color=all_colors[i], linewidth=3)
 
-        # Sort depths and corresponding columns
-        depths, temp_columns = zip(*sorted(zip(depths, temp_columns)))
-        depths = np.array(depths)
-        temp_matrix = data[list(temp_columns)].to_numpy()  # shape: (n_times, n_depths)
-        times = data['TIME'].to_numpy()
+        # Plot additional TT/NTC borehole data if provided
+        if ntc_data_list is not None and labels is not None:
+            for j, (ntc_df, label) in enumerate(zip(ntc_data_list, labels[n_profiles:])):
+                color_idx = n_profiles + j
+                # get tynitag temperatures
+                tynitag_temps = [
+                    ntc_df['Black Probe Temperature (corrected)'].iloc[0],
+                    ntc_df['White Probe Temperature (corrected)'].iloc[0]
+                ]
+                # get tynitag depths
+                tynitag_depths = [
+                    ntc_df['depth black probe [m]'].iloc[0],
+                    ntc_df['depth white probe [m]'].iloc[0]
+                ]
+                # plot tynitag temperatures at their depths (one line per borehole)
+                plt.plot(tynitag_temps, tynitag_depths, 'o-', label=label, color=all_colors[color_idx], alpha=0.8)
 
-        # Interpolate temperature profile to a finer depth grid
-        fine_depths = np.linspace(depths.min(), depths.max(), 200)
-        temp_interp = np.empty((len(times), len(fine_depths)))
-        for i, temp_row in enumerate(temp_matrix):
-            temp_interp[i, :] = np.interp(fine_depths, depths, temp_row)
-
-        # Find CTS for each time step (depth where temp is closest to 0°C)
-        cts_depths = []
-        for temp_row in temp_interp:
-            idx = np.argmin(np.abs(temp_row))
-            # Only mark CTS if temperature is within threshold of 0°C
-            if np.abs(temp_row[idx]) < cts_threshold:
-                cts_depths.append(fine_depths[idx])
-            else:
-                cts_depths.append(np.nan)
-
-        # Plot heatmap
-        plt.figure(figsize=(8, 4), dpi=250)
-        extent = [mdates.date2num(times[0]), mdates.date2num(times[-1]), fine_depths[-1], fine_depths[0]]
-        plt.imshow(
-            temp_interp.T,
-            aspect='auto',
-            cmap=cmc.batlow,
-            extent=extent,
-            vmin=np.nanmin(temp_interp),
-            vmax=np.nanmax(temp_interp),
-            label='Temperature [°C]'  # This label will not show in legend, but can be used for reference
-        )
-
-        plt.xlabel('Time', fontsize=self.fontsize)
-        plt.ylabel('Depth [m]', fontsize=self.fontsize)
-        plt.title(title if title else 'Temperature Profile Heatmap', fontsize=self.fontsize)
-        plt.xticks(fontsize=self.fontsize, rotation=45)
-        plt.yticks(fontsize=self.fontsize)
-        plt.grid()
-
-        # Mark CTS
-        plt.plot(times, cts_depths, color='k', linewidth=self.linewidth, label='CTS (0°C)')
-        handles, labels = plt.gca().get_legend_handles_labels()
-        if len(labels) > 0:
-            plt.legend(frameon=True, fancybox=False, edgecolor='black', framealpha=1, facecolor='white',
-                   loc='upper right', ncol=1, fontsize=self.fontsize)
-
-        # Set x-axis format to month and day only
-        plt.gca().xaxis.set_major_formatter(mdates.DateFormatter('%m-%d'))
-
-        # set format using format_plot
-        self.format_plot(title)
-
-        cbar = plt.colorbar()
-        cbar.set_label('Temperature [°C]', fontsize=self.fontsize)
-        cbar.ax.tick_params(labelsize=self.fontsize-2)
-
+        plt.gca().invert_yaxis()
+        plt.xlabel('Ice Temperature [°C]')
+        plt.ylabel('Depth [m]')
+        plt.title(title if title else 'Stabilized Temperature Profiles')
+        plt.axvline(x=0, color='k', linestyle='--')
         plt.tight_layout()
-        plt.savefig(savepath)
+        self.format_plot(title)
+        plt.legend(frameon=True, fancybox=False, edgecolor='black', framealpha=1, facecolor='white', loc='best')
+        if savepath:
+            plt.savefig(savepath)
 
     def plot_geoprecision_thermistor(self, start_time, end_time, depths, savepath, title=None):
         thermistor = ThermistorData(self.file_path, self.delimiter, self.measurement_depth)
@@ -345,38 +374,6 @@ class ThermistorDataPlotter:
         plt.xticks(rotation=45)  # Rotate x ticks 45 degrees
         plt.grid()
         plt.tight_layout()
-
-        # save the plot
-        plt.savefig(savepath)
-    
-    def plot_multiple_geoprisition_chains(self, start_time, end_time, depths, savepath, title=None):
-        thermistor1 = ThermistorData(self.file_path, self.delimiter, self.measurement_depth)
-        thermistor2 = ThermistorData(self.file_paths[1], self.delimiter, self.measurement_depth)
-        data1 = thermistor1.get_chain_data(start_time, end_time)
-        data2 = thermistor2.get_chain_data(start_time, end_time)
-        data1['TIME'] = pd.to_datetime(data1['TIME'])
-        data2['TIME'] = pd.to_datetime(data2['TIME'])
-
-        # adjust figure size based on legend size
-        plt.figure(dpi=300)  # adjust the values as per your requirement and set dpi for resolution
-
-        # plot the data for each depth
-        thermistor_column1 = f'{depths[0]} m'
-        thermistor_column2 = f'{depths[1]} m'
-        plt.plot(data1['TIME'], data1[thermistor_column1], label=f'Disturbed borehole')
-        plt.plot(data2['TIME'], data2[thermistor_column2], label=f'Pre-drilled borehole')
-
-        # format the plot
-        plt.xlabel('Time')
-        plt.ylabel('Temperature [°C]')
-        plt.title(title)
-        plt.legend(fontsize='small')
-        plt.xticks(rotation=45)  # Rotate x ticks 45 degrees
-        plt.grid()
-        plt.tight_layout()
-
-        # modify x-axis tick format to show date and time without seconds
-        plt.gca().xaxis.set_major_formatter(mdates.DateFormatter('%m-%d %H:%M'))
 
         # save the plot
         plt.savefig(savepath)
@@ -512,9 +509,8 @@ class ThermistorDataPlotter:
         ntc_thermistor = ThermistorData(self.file_path, self.delimiter)
         ntc_thermistor_data = ntc_thermistor.get_ntc_data()
 
-        # Calculate the 0-degree offset for the Black and White probes
-        black_probe_offset, stable_indices_black = calculate_zero_degree_offset(ntc_thermistor_data['Black Probe Temperature'])
-        white_probe_offset, stable_indices_white = calculate_zero_degree_offset(ntc_thermistor_data['White Probe Temperature'])
+        # Use the updated method to get offsets and stable indices
+        black_probe_offset, stable_indices_black, white_probe_offset, stable_indices_white = ntc_thermistor.calculate_ntc_offsets()
 
         # Get the time of the stable period
         stable_period_black_start = ntc_thermistor_data['TIME'].iloc[stable_indices_black[0]]
@@ -522,7 +518,6 @@ class ThermistorDataPlotter:
         stable_period_white_start = ntc_thermistor_data['TIME'].iloc[stable_indices_white[0]]
         stable_period_white_end = ntc_thermistor_data['TIME'].iloc[stable_indices_white[-1]]
 
-        # adjust figure size based on legend size
         plt.figure(figsize=(12, 8.5), dpi=300)
 
         # plot the ntc data
@@ -530,7 +525,7 @@ class ThermistorDataPlotter:
         plt.plot(ntc_thermistor_data['TIME'], ntc_thermistor_data['White Probe Temperature'], linewidth=4, alpha=0.6, label='White Probe (Gemini)')
 
         # plot the reference geoprecision thermistor chain data
-        plt.plot(thermistor_chain_data['TIME'], thermistor_chain_data['10.0 m'], linewidth=4, alpha=0.6, label='Thermistor chain (Geoprecision)', color='black')
+        plt.plot(thermistor_chain_data['TIME'], thermistor_chain_data['#20'], linewidth=4, alpha=0.6, label='Thermistor chain (Geoprecision)', color='black')
 
         # Mark the stable period for Black Probe
         plt.axvline(stable_period_black_start, color='tab:blue', linestyle='-', linewidth=2)
@@ -544,7 +539,6 @@ class ThermistorDataPlotter:
         plt.text(stable_period_white_start, y_limits[0], 'Stable Start', color='tab:orange', fontsize=14, verticalalignment='bottom', horizontalalignment='right', rotation=45)
         plt.text(stable_period_white_end, y_limits[0], 'Stable End', color='tab:orange', fontsize=14, verticalalignment='bottom', horizontalalignment='right', rotation=45)
 
-        # format the plot
         plt.xlabel('Time')
         plt.ylabel('Temperature [°C]')
         plt.title(title, fontsize=22)
@@ -560,14 +554,65 @@ class ThermistorDataPlotter:
         plt.axhline(y=white_probe_offset, color='orange', linestyle='dotted', linewidth=2, label=f'White Probe 0°C Offset: {white_probe_offset:.2f}°C')
 
         plt.legend(fontsize=22, frameon=True, fancybox=False, edgecolor='black', framealpha=1, facecolor='white', loc='upper center', bbox_to_anchor=(0.45, -0.4), ncol=2)
-
-        # Adjust layout to make room for the legend
         plt.tight_layout()
 
-        # save the plot
         title_with_underscores = title.replace(' ', '_').replace('/', '').replace('-', '_')
         plt.savefig(savepath + title_with_underscores + '.png')
 
-        zero_degree_offsets = (black_probe_offset, white_probe_offset)
+        # Return offsets and stable indices
+        return (black_probe_offset, stable_indices_black, white_probe_offset, stable_indices_white)
 
-        return zero_degree_offsets
+
+# Other helpful processing functions can be added here
+
+def read_tynitag_depth_file(depth_file):
+    """
+    Reads a Tynitag depth file and returns a DataFrame with columns:
+    ['date', 'depth white probe [m]', 'depth black probe [m]']
+    """
+    df = pd.read_csv(depth_file, sep=';', header=6)
+    # Replace comma with dot and convert to float for depth columns
+    df['depth black probe [m]'] = df['depth black probe [m]'].astype(str).str.replace(',', '.').astype(float)
+    df['depth white probe [m]'] = df['depth white probe [m]'].astype(str).str.replace(',', '.').astype(float)
+    # Only keep relevant columns
+    return df[['date', 'depth black probe [m]', 'depth white probe [m]']]
+
+def combine_tynitag_data(depths_df, snapshot_df, offsets_df=None):
+    """
+    Combine tynitag depth, snapshot, and offset dataframes into one dataframe
+    with corrected temperatures and matching depths.
+    If offsets_df is provided, subtract offsets. Otherwise, use raw temperatures.
+    """
+    import pandas as pd
+
+    # Get measurement time and find closest date in depths_df
+    measurement_time = pd.to_datetime(snapshot_df['TIME'].iloc[0])
+    depths_df['date_dt'] = pd.to_datetime(depths_df['date'], format='%d.%m.%y', errors='coerce')
+    closest_idx = (depths_df['date_dt'] - measurement_time).abs().idxmin()
+    depth_row = depths_df.loc[closest_idx]
+
+    # Determine offsets
+    if offsets_df is not None:
+        black_offset = float(offsets_df['Black Probe Offset'].iloc[0])
+        white_offset = float(offsets_df['White Probe Offset'].iloc[0])
+    else:
+        black_offset = 0.0
+        white_offset = 0.0
+
+    black_temp_corr = snapshot_df['Black Probe Temperature'].iloc[0] - black_offset
+    white_temp_corr = snapshot_df['White Probe Temperature'].iloc[0] - white_offset
+
+    # Combine into one DataFrame
+    combined_df = pd.DataFrame({
+        'date': [depth_row['date']],
+        'TIME': [snapshot_df['TIME'].iloc[0]],
+        'Black Probe Temperature (corrected)': [black_temp_corr],
+        'White Probe Temperature (corrected)': [white_temp_corr],
+        'depth black probe [m]': [depth_row['depth black probe [m]']],
+        'depth white probe [m]': [depth_row['depth white probe [m]']]
+    })
+
+    # Clean up helper column
+    depths_df.drop(columns='date_dt', inplace=True)
+
+    return combined_df
