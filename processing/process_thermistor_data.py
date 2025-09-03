@@ -202,7 +202,7 @@ class ThermistorDataPlotter:
         # Load depths if provided
         depths = {}
         if depth_file is not None:
-            df_depths = pd.read_csv(depth_file, sep=';', skiprows=1)
+            df_depths = pd.read_csv(depth_file, sep=';', header=0)
             df_depths = df_depths[df_depths.iloc[:,0].astype(str).str.startswith('#')]
             last_col = df_depths.columns[5]
             for _, row in df_depths.iterrows():
@@ -232,80 +232,42 @@ class ThermistorDataPlotter:
         plt.gca().xaxis.set_major_formatter(mdates.DateFormatter('%m-%d'))
         plt.savefig(savepath)
 
-    def plot_temperature_profile(self, start_time, end_time, offsets, depth_file, savepath, title=None):
+    def plot_temperature_profile(self, snapshot_time, offsets, depth_file, savepath, title=None):
+        """
+        Plot a single chain's temperature profile as the DAILY MEAN for snapshot_time.
+
+        snapshot_time accepts:
+          - '20250808'
+          - '2025-08-08'
+          - '08.08.2025'
+          - '08.08.2025 13:00:00' (time ignored)
+        """
+        # Parse day robustly (EU dates supported)
+        day = pd.to_datetime(snapshot_time, dayfirst=True, errors='coerce')
+        if pd.isna(day):
+            day = pd.to_datetime(str(snapshot_time), format='%Y%m%d', errors='coerce')
+        if pd.isna(day):
+            raise ValueError(f"Could not parse snapshot_time: {snapshot_time}")
+        day = day.normalize()
+
+        # Build start/end strings for the whole day
+        start_str = day.strftime('%d.%m.%Y 00:00:00')
+        end_str = day.strftime('%d.%m.%Y 23:59:59')
+
         thermistor = ThermistorData(self.file_path, self.delimiter, self.measurement_depth)
-        data = thermistor.get_chain_data_with_offsets(start_time, end_time, offsets)
-        data['TIME'] = pd.to_datetime(data['TIME'])
+        data = thermistor.get_chain_data_with_offsets(start_str, end_str, offsets)
 
         # Load depths
         df_depths = pd.read_csv(depth_file, sep=';', header=0)
         df_depths = df_depths[df_depths.iloc[:,0].astype(str).str.startswith('#')]
-        last_col = df_depths.columns[5]
+        depth_col_candidates = [col for col in df_depths.columns if 'depth' in col.lower() and '[m]' in col.lower()]
+        depth_col = depth_col_candidates[0] if depth_col_candidates else df_depths.columns[-1]
+
         depths = []
-        stabilized_temps = []
-
+        mean_temps = []
         exclude_cols = ['NO', 'TIME', 'TEMP LOGGER', 'TEMP BATTERY', 'HK-BAT:V']
-        for _, row in df_depths.iterrows():
-            thermistor_name = row.iloc[0]
-            try:
-                depth = float(str(row[last_col]).replace(',', '.'))
-            except:
-                continue
-            if thermistor_name in data.columns and thermistor_name not in exclude_cols:
-                temp_series = data[thermistor_name]
-                offset, stable_indices = calculate_zero_degree_offset(temp_series)
-                # Convert stable_indices to positions if needed
-                positions = [temp_series.index.get_loc(idx) for idx in stable_indices if idx in temp_series.index]
-                if positions:
-                    stabilized_mean = temp_series.iloc[positions].mean()
-                    if not np.isnan(stabilized_mean):
-                        depths.append(depth)
-                        stabilized_temps.append(stabilized_mean)
 
-        if depths and stabilized_temps:
-            depths, stabilized_temps = zip(*sorted(zip(depths, stabilized_temps)))
-
-        plt.figure(figsize=(3,4),dpi=250)
-        plt.plot(stabilized_temps, depths, 'o-', color='k', label='Stabilized Temperature')
-        plt.gca().invert_yaxis()
-        plt.xlabel('Ice Temperature [°C]')
-        plt.ylabel('Depth [m]')
-        plt.title(title if title else 'Temperature Profile')
-        plt.tight_layout()
-        # Use the format_plot method for consistent styling
-        self.format_plot(title)
-        plt.axvline(x=0, color='k', linestyle='--')
-        plt.savefig(savepath)
-
-    def plot_multiple_temperature_profiles(self, start_time, end_time, offsets_list, depth_files, labels=None, savepath=None, title=None, ntc_data_list=None, ntc_offsets_list=None):
-        """
-        Plots multiple stabilized temperature profiles in one figure.
-        depth_files: list of depth files (chain and tynitag/NTC)
-        ntc_data_list: list of DataFrames for additional boreholes (tynitag/NTC), each with
-            ['date', 'TIME', 'Black Probe Temperature (corrected)', 'White Probe Temperature (corrected)', 'depth black probe [m]', 'depth white probe [m]']
-        """
-        plt.figure(figsize=(3, 4), dpi=250)
-        n_profiles = len(self.file_paths)
-        n_ntc = len(ntc_data_list) if ntc_data_list is not None else 0
-        total_profiles = n_profiles + n_ntc
-
-        # Use a single colormap for all profiles (chains + NTC)
-        all_colors = cmc.batlow(np.linspace(0, 1, total_profiles))
-        if labels is None:
-            labels = [f'Profile {i+1}' for i in range(n_profiles)]
-
-        # Plot chain profiles
-        for i, (fp, offs, dfile, label) in enumerate(zip(self.file_paths, offsets_list, depth_files[:n_profiles], labels)):
-            df_depths = pd.read_csv(dfile, sep=';', header=0)
-            df_depths = df_depths[df_depths.iloc[:,0].astype(str).str.match(r'#\d+')]
-            depth_col_candidates = [col for col in df_depths.columns if 'depth' in col.lower() and '[m]' in col.lower()]
-            depth_col = depth_col_candidates[0] if depth_col_candidates else df_depths.columns[-1]
-            depths = []
-            stabilized_temps = []
-            exclude_cols = ['NO', 'TIME', 'TEMP LOGGER', 'TEMP BATTERY', 'HK-BAT:V']
-            thermistor = ThermistorData(fp, self.delimiter, self.measurement_depth)
-            data = thermistor.get_chain_data_with_offsets(start_time, end_time, offs)
-            data['TIME'] = pd.to_datetime(data['TIME'])
+        if not data.empty:
             for _, row in df_depths.iterrows():
                 thermistor_name = row.iloc[0]
                 try:
@@ -313,43 +275,120 @@ class ThermistorDataPlotter:
                 except Exception:
                     continue
                 if thermistor_name in data.columns and thermistor_name not in exclude_cols:
-                    temp_series = data[thermistor_name]
-                    offset, stable_indices = calculate_zero_degree_offset(temp_series)
-                    positions = [temp_series.index.get_loc(idx) for idx in stable_indices if idx in temp_series.index]
-                    if positions:
-                        stabilized_mean = temp_series.iloc[positions].mean()
-                        if not np.isnan(stabilized_mean):
-                            depths.append(depth)
-                            stabilized_temps.append(stabilized_mean)
-            if depths and stabilized_temps:
-                depths, stabilized_temps = zip(*sorted(zip(depths, stabilized_temps)))
-                plt.plot(stabilized_temps, depths, 'o-', label=label, color=all_colors[i], linewidth=3)
+                    series = pd.to_numeric(data[thermistor_name], errors='coerce')
+                    m = series.mean(skipna=True)
+                    if not np.isnan(m):
+                        depths.append(depth)
+                        mean_temps.append(m)
 
-        # Plot additional TT/NTC borehole data if provided
-        if ntc_data_list is not None and labels is not None:
+        if depths and mean_temps:
+            depths, mean_temps = zip(*sorted(zip(depths, mean_temps)))
+
+        plt.figure(figsize=(2.5,4), dpi=250)
+        plt.plot(mean_temps, depths, 'o-', color='k', label='Daily mean')
+        plt.gca().invert_yaxis()
+        plt.xlabel('Ice Temperature [°C]')
+        plt.ylabel('Depth [m]')
+        plot_title = f"{title if title else 'Temperature Profile'} — {day.strftime('%Y-%m-%d')}"
+        plt.title(plot_title)
+        plt.tight_layout()
+        self.format_plot(plot_title)
+        plt.axvline(x=0, color='k', linestyle='--')
+        plt.savefig(savepath)
+
+    def plot_multiple_temperature_profiles(self, snapshot_time, offsets_list, depth_files, labels=None, savepath=None, title=None, ntc_data_list=None):
+        """
+        Plot temperature profiles for all chains and optional TT/NTC boreholes as DAILY MEANS.
+
+        snapshot_time: day selector for averaging. Accepts formats like:
+            - '20250808'
+            - '2025-08-08'
+            - '08.08.2025'
+            - '08.08.2025 13:00:00' (time is ignored; date is used)
+        For TT/NTC boreholes, pass combined 1-row DataFrames (already averaged/corrected)
+        via ntc_data_list.
+        """
+        # Parse provided snapshot_time to a day (EU dates supported)
+        day = pd.to_datetime(snapshot_time, dayfirst=True, errors='coerce')
+        if pd.isna(day):
+            # Try compact format like 20250808
+            day = pd.to_datetime(str(snapshot_time), format='%Y%m%d', errors='coerce')
+        if pd.isna(day):
+            raise ValueError(f"Could not parse snapshot_time: {snapshot_time}")
+        day = day.normalize()
+
+        # Build start/end strings for chain reader (expects '%d.%m.%Y %H:%M:%S')
+        start_str = day.strftime('%d.%m.%Y 00:00:00')
+        end_str = day.strftime('%d.%m.%Y 23:59:59')
+
+        plt.figure(figsize=(2.5, 4), dpi=250)
+        n_profiles = len(self.file_paths)
+        n_ntc = len(ntc_data_list) if ntc_data_list is not None else 0
+        total_profiles = n_profiles + n_ntc
+
+        # Colors for all series (chains + optional TT/NTC)
+        all_colors = cmc.batlow(np.linspace(0, 1, total_profiles if total_profiles > 0 else 1))
+        if labels is None:
+            labels = [f'Profile {i+1}' for i in range(n_profiles)]
+
+        # Plot chain profiles as daily means
+        for i, (fp, offs, dfile, label) in enumerate(zip(self.file_paths, offsets_list, depth_files[:n_profiles], labels)):
+            # Read depths
+            df_depths = pd.read_csv(dfile, sep=';', header=0)
+            df_depths = df_depths[df_depths.iloc[:, 0].astype(str).str.match(r'#\d+')]
+            depth_col_candidates = [col for col in df_depths.columns if 'depth' in col.lower() and '[m]' in col.lower()]
+            depth_col = depth_col_candidates[0] if depth_col_candidates else df_depths.columns[-1]
+
+            # Read chain data for the whole day and apply offsets
+            thermistor = ThermistorData(fp, self.delimiter, self.measurement_depth)
+            day_df = thermistor.get_chain_data_with_offsets(start_str, end_str, offs)
+            if day_df.empty:
+                continue
+
+            exclude_cols = ['NO', 'TIME', 'TEMP LOGGER', 'TEMP BATTERY', 'HK-BAT:V']
+            # Compute daily mean per thermistor
+            depths, temps = [], []
+            for _, row in df_depths.iterrows():
+                thermistor_name = row.iloc[0]
+                try:
+                    depth = float(str(row[depth_col]).replace(',', '.'))
+                except Exception:
+                    continue
+                if thermistor_name in day_df.columns and thermistor_name not in exclude_cols:
+                    series = pd.to_numeric(day_df[thermistor_name], errors='coerce')
+                    mean_temp = series.mean(skipna=True)
+                    if not np.isnan(mean_temp):
+                        depths.append(depth)
+                        temps.append(mean_temp)
+
+            if depths and temps:
+                depths, temps = zip(*sorted(zip(depths, temps)))
+                plt.plot(temps, depths, 'o-', label=label, color=all_colors[i], linewidth=3)
+
+        # Plot TT/NTC borehole data (already averaged and corrected)
+        if ntc_data_list is not None and len(ntc_data_list) > 0:
             for j, (ntc_df, label) in enumerate(zip(ntc_data_list, labels[n_profiles:])):
                 color_idx = n_profiles + j
-                # get tynitag temperatures
                 tynitag_temps = [
                     ntc_df['Black Probe Temperature (corrected)'].iloc[0],
                     ntc_df['White Probe Temperature (corrected)'].iloc[0]
                 ]
-                # get tynitag depths
                 tynitag_depths = [
                     ntc_df['depth black probe [m]'].iloc[0],
                     ntc_df['depth white probe [m]'].iloc[0]
                 ]
-                # plot tynitag temperatures at their depths (one line per borehole)
-                plt.plot(tynitag_temps, tynitag_depths, 'o-', label=label, color=all_colors[color_idx], alpha=0.8)
+                plt.plot(tynitag_temps, tynitag_depths, 'o-', label=label, color=all_colors[color_idx], alpha=0.85)
 
         plt.gca().invert_yaxis()
         plt.xlabel('Ice Temperature [°C]')
         plt.ylabel('Depth [m]')
-        plt.title(title if title else 'Stabilized Temperature Profiles')
+        plot_title = f"{title if title else 'Temperature Profiles'} — {day.strftime('%Y-%m-%d')}"
+        plt.title(plot_title)
         plt.axvline(x=0, color='k', linestyle='--')
         plt.tight_layout()
-        self.format_plot(title)
-        plt.legend(frameon=True, fancybox=False, edgecolor='black', framealpha=1, facecolor='white', loc='best')
+        self.format_plot(plot_title)
+        if labels and len(labels) > 0:
+            plt.legend(frameon=True, fancybox=False, edgecolor='black', framealpha=1, facecolor='white', loc='best')
         if savepath:
             plt.savefig(savepath)
 
@@ -616,3 +655,33 @@ def combine_tynitag_data(depths_df, snapshot_df, offsets_df=None):
     depths_df.drop(columns='date_dt', inplace=True)
 
     return combined_df
+
+def ntc_daily_snapshot(df, day_str):
+    """
+    Return a 1-row snapshot with daily mean temps for the given day (e.g., '20250808').
+    Columns: TIME, Black Probe Temperature, White Probe Temperature
+    """
+    df = df.copy()
+    df['TIME'] = pd.to_datetime(df['TIME'])
+
+    # Parse day string robustly
+    day = pd.to_datetime(day_str, format='%Y%m%d', errors='coerce')
+    if pd.isna(day):
+        day = pd.to_datetime(day_str)  # fallback
+
+    start = day.normalize()
+    end = start + pd.Timedelta(days=1)
+
+    day_df = df[(df['TIME'] >= start) & (df['TIME'] < end)]
+    if day_df.empty:
+        raise ValueError(f"No data for day {day_str}")
+
+    avg_black = day_df['Black Probe Temperature'].mean()
+    avg_white = day_df['White Probe Temperature'].mean()
+
+    # Create a single-row snapshot (TIME set to noon for display)
+    return pd.DataFrame({
+        'TIME': [start + pd.Timedelta(hours=12)],
+        'Black Probe Temperature': [avg_black],
+        'White Probe Temperature': [avg_white]
+    })
