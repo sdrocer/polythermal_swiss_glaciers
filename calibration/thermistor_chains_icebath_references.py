@@ -2,7 +2,7 @@ import os
 
 # import thermistor chain processing functions
 os.chdir('/Users/janoschbeer/Library/Mobile Documents/com~apple~CloudDocs/PhD/projects/asses_swiss_gl_therm_regimes/processing')
-from process_thermistor_data import ThermistorData
+from thermistor_processing import ThermistorData
 
 # create a ThermistorData object
 path_10m_chain = '/Users/janoschbeer/Library/Mobile Documents/com~apple~CloudDocs/PhD/data/fieldwork_data/THERMAP_2024_2025/icetemperature_data/thermistor_chains/tinus_chains/calibration_runs/A5389E_20240822133758.csv'
