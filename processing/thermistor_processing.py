@@ -11,7 +11,7 @@ from matplotlib import dates as mdates
 
 os.chdir('/Users/janoschbeer/Library/Mobile Documents/com~apple~CloudDocs/PhD/projects/asses_swiss_gl_therm_regimes/')
 from calibration.thermistor_calibration import *
-import calibration.thermistor_chains_0deg_references
+import calibration.thermistor_chains_icebath_references
 
 """
     This script is used to process and plot thermistor data.
@@ -47,7 +47,12 @@ class ThermistorData:
         white_probe_offset, stable_indices_white = calculate_zero_degree_offset(df['White Probe Temperature'])
         return (black_probe_offset, stable_indices_black, white_probe_offset, stable_indices_white)
     
-    def get_chain_data(self, start_time, end_time):
+    def get_chain_data(self, start_time=None, end_time=None, snapshot_day=None):
+        """
+        Returns chain data for a given time range or a single snapshot day.
+        If snapshot_day is provided, start_time and end_time are ignored.
+        snapshot_day accepts formats like '20250808', '2025-08-08', '08.08.2025'.
+        """
         data_lines = []
         columns = None
         with open(self.file_path, 'r') as file:
@@ -56,17 +61,13 @@ class ThermistorData:
                 # Detect header line
                 if line.startswith('NO') and 'TIME' in line:
                     columns = line.split(self.delimiter)
-                    # Simplify columns here
                     columns = [col.split(':')[0] if col.startswith('#') else col for col in columns]
                     continue
-                # Skip metadata and empty lines
                 if not line or not line[0].isdigit():
                     continue
-                # Only collect data if header is set
                 if columns:
                     data_lines.append(line.split(self.delimiter))
 
-        # If no data found, return empty DataFrame
         if not data_lines or not columns:
             return pd.DataFrame()
 
@@ -75,20 +76,51 @@ class ThermistorData:
         for col in df.columns[2:]:
             df[col] = pd.to_numeric(df[col], errors='coerce')
 
+        # If snapshot_day is provided, filter for that day only
+        if snapshot_day is not None:
+            # Try parsing with known formats to avoid ambiguity and warnings
+            day = None
+            try:
+                day = pd.to_datetime(snapshot_day, format='%d.%m.%Y', errors='coerce')
+            except Exception:
+                pass
+            if pd.isna(day):
+                try:
+                    day = pd.to_datetime(snapshot_day, format='%Y-%m-%d', errors='coerce')
+                except Exception:
+                    pass
+            if pd.isna(day):
+                try:
+                    day = pd.to_datetime(str(snapshot_day), format='%Y%m%d', errors='coerce')
+                except Exception:
+                    pass
+            if pd.isna(day):
+                raise ValueError(f"Could not parse snapshot_day: {snapshot_day}")
+            day = day.normalize()
+            start_time = day
+            end_time = day + pd.Timedelta(days=1)
+        else:
+            # Parse start/end if not None
+            if start_time is not None:
+                start_time = pd.to_datetime(start_time, format='%d.%m.%Y %H:%M:%S')
+            if end_time is not None:
+                end_time = pd.to_datetime(end_time, format='%d.%m.%Y %H:%M:%S')
+
         # Filter by time range
-        start_time = pd.to_datetime(start_time, format='%d.%m.%Y %H:%M:%S')
-        end_time = pd.to_datetime(end_time, format='%d.%m.%Y %H:%M:%S')
-        df = df[(df['TIME'] >= start_time) & (df['TIME'] <= end_time)]
+        if start_time is not None and end_time is not None:
+            df = df[(df['TIME'] >= start_time) & (df['TIME'] < end_time)]
 
         return df
 
-    def get_chain_data_with_offsets(self, start_time, end_time, offsets):
+    def get_chain_data_with_offsets(self, start_time=None, end_time=None, offsets=None, snapshot_day=None):
         """
-        Returns chain data for the given time range with offsets applied.
+        Returns chain data for the given time range or a single snapshot day with offsets applied.
         Uses apply_chain_offsets from thermistor_calibration.py.
+        If snapshot_day is provided, start_time and end_time are ignored.
         """
-        df = self.get_chain_data(start_time, end_time)
-        df = apply_chain_offsets(df, offsets)
+        df = self.get_chain_data(start_time=start_time, end_time=end_time, snapshot_day=snapshot_day)
+        if offsets is not None and not df.empty:
+            df = apply_chain_offsets(df, offsets)
         return df
 
     def get_ntc_data(self):
@@ -155,8 +187,8 @@ class ThermistorDataPlotter:
         base_linewidth = 4
 
         # Scale font and line sizes
-        self.fontsize = int(base_fontsize * scale / 12)  # 12 is a typical reference width
-        self.linewidth = base_linewidth * scale / 12
+        self.fontsize = int(base_fontsize * scale / 11)  # 12 is a typical reference width
+        self.linewidth = base_linewidth * scale / 11
 
         # Set font and line sizes
         plt.rcParams['font.sans-serif'] = 'Arial'
@@ -242,20 +274,9 @@ class ThermistorDataPlotter:
           - '08.08.2025'
           - '08.08.2025 13:00:00' (time ignored)
         """
-        # Parse day robustly (EU dates supported)
-        day = pd.to_datetime(snapshot_time, dayfirst=True, errors='coerce')
-        if pd.isna(day):
-            day = pd.to_datetime(str(snapshot_time), format='%Y%m%d', errors='coerce')
-        if pd.isna(day):
-            raise ValueError(f"Could not parse snapshot_time: {snapshot_time}")
-        day = day.normalize()
-
-        # Build start/end strings for the whole day
-        start_str = day.strftime('%d.%m.%Y 00:00:00')
-        end_str = day.strftime('%d.%m.%Y 23:59:59')
-
+        # Use get_chain_data_with_offsets with snapshot_day argument
         thermistor = ThermistorData(self.file_path, self.delimiter, self.measurement_depth)
-        data = thermistor.get_chain_data_with_offsets(start_str, end_str, offsets)
+        data = thermistor.get_chain_data_with_offsets(offsets=offsets, snapshot_day=snapshot_time)
 
         # Load depths
         df_depths = pd.read_csv(depth_file, sep=';', header=0)
@@ -289,7 +310,15 @@ class ThermistorDataPlotter:
         plt.gca().invert_yaxis()
         plt.xlabel('Ice Temperature [°C]')
         plt.ylabel('Depth [m]')
-        plot_title = f"{title if title else 'Temperature Profile'} — {day.strftime('%Y-%m-%d')}"
+        # Format the day for the title
+        day = pd.to_datetime(snapshot_time, dayfirst=True, errors='coerce')
+        if pd.isna(day):
+            day = pd.to_datetime(str(snapshot_time), format='%Y%m%d', errors='coerce')
+        if pd.isna(day):
+            day_str = str(snapshot_time)
+        else:
+            day_str = day.strftime('%Y-%m-%d')
+        plot_title = f"{title if title else 'Temperature Profile'} — {day_str}"
         plt.title(plot_title)
         plt.tight_layout()
         self.format_plot(plot_title)
@@ -317,10 +346,6 @@ class ThermistorDataPlotter:
             raise ValueError(f"Could not parse snapshot_time: {snapshot_time}")
         day = day.normalize()
 
-        # Build start/end strings for chain reader (expects '%d.%m.%Y %H:%M:%S')
-        start_str = day.strftime('%d.%m.%Y 00:00:00')
-        end_str = day.strftime('%d.%m.%Y 23:59:59')
-
         plt.figure(figsize=(2.5, 4), dpi=250)
         n_profiles = len(self.file_paths)
         n_ntc = len(ntc_data_list) if ntc_data_list is not None else 0
@@ -339,9 +364,9 @@ class ThermistorDataPlotter:
             depth_col_candidates = [col for col in df_depths.columns if 'depth' in col.lower() and '[m]' in col.lower()]
             depth_col = depth_col_candidates[0] if depth_col_candidates else df_depths.columns[-1]
 
-            # Read chain data for the whole day and apply offsets
+            # Read chain data for the snapshot day and apply offsets
             thermistor = ThermistorData(fp, self.delimiter, self.measurement_depth)
-            day_df = thermistor.get_chain_data_with_offsets(start_str, end_str, offs)
+            day_df = thermistor.get_chain_data_with_offsets(offsets=offs, snapshot_day=snapshot_time)
             if day_df.empty:
                 continue
 
@@ -685,3 +710,31 @@ def ntc_daily_snapshot(df, day_str):
         'Black Probe Temperature': [avg_black],
         'White Probe Temperature': [avg_white]
     })
+
+def read_thermistor_depths(depth_file):
+    """
+    Reads a thermistor depth file and returns a dictionary mapping thermistor number (#1, #2, ...) to its current measurement depth (in meters).
+    Assumes the last column contains the current depth values.
+    """
+    import pandas as pd
+
+    # Read the file, skipping the header row
+    df = pd.read_csv(depth_file, sep=';', header=0)
+
+    # Find the last column (current depth)
+    last_col = df.columns[-1]
+
+    # Only keep rows that start with '#' (thermistor numbers)
+    df_thermistors = df[df[df.columns[0]].astype(str).str.startswith('#')]
+
+    # Build dictionary: {thermistor_number: depth}
+    depths = {}
+    for _, row in df_thermistors.iterrows():
+        thermistor_num = row[df.columns[0]]
+        try:
+            depth = float(str(row[last_col]).replace(',', '.'))
+        except Exception:
+            depth = None
+        depths[thermistor_num] = depth
+
+    return depths

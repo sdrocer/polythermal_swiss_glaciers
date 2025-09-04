@@ -2,9 +2,6 @@ import numpy as np
 import pandas as pd
 import geopandas as gpd
 import rasterio
-import matplotlib.pyplot as plt
-import cmcrameri.cm as cmc
-import alphashape as _alphashape
 import warnings
 import re
 from rasterio.transform import from_origin
@@ -13,7 +10,6 @@ from shapely.geometry import Point
 from scipy.interpolate import griddata
 from shapely.ops import unary_union
 from io import BytesIO
-from matplotlib.ticker import MultipleLocator, FuncFormatter
 
 def read_thickness_txt(path):
     """
@@ -118,24 +114,6 @@ def save_geotiff(path, grid, transform, crs_epsg, nodata=np.nan):
     }
     with rasterio.open(path, 'w', **profile) as dst:
         dst.write(grid.astype('float32'), 1)
-
-def plot_heatmap(grid, transform, title=None, points_gdf=None, polygon_gdf=None, cmap=cmc.batlow, vmin=None, vmax=None):
-    fig, ax = plt.subplots(figsize=(8,6), dpi=200)
-    extent = (transform.c, transform.c + transform.a*grid.shape[1],
-              transform.f + transform.e*grid.shape[0], transform.f)
-    im = ax.imshow(grid, extent=extent, origin='upper', cmap=cmap, vmin=vmin, vmax=vmax)
-    if polygon_gdf is not None and not polygon_gdf.empty:
-        polygon_gdf.boundary.plot(ax=ax, color='k', linewidth=1.0)
-    if points_gdf is not None and not points_gdf.empty:
-        points_gdf.plot(ax=ax, markersize=6, column='thickness', cmap=cmap,
-                        vmin=vmin, vmax=vmax, edgecolor='k', linewidth=0.2, alpha=0.8)
-    cb = fig.colorbar(im, ax=ax, label='Ice thickness [m]')
-    ax.set_xlabel('Easting (EPSG:2056)')
-    ax.set_ylabel('Northing (EPSG:2056)')
-    if title: ax.set_title(title)
-    ax.grid(True, alpha=0.3)
-    fig.tight_layout()
-    return fig, ax
 
 def make_coverage_polygon(points_gdf, method='alpha', alpha=None, buffer_m=0.0):
     """
@@ -243,193 +221,6 @@ def download_swisstopo_orthophoto(
 
     return out_tif, transform, rasterio.crs.CRS.from_epsg(crs_epsg)
 
-def format_plot(ax=None, title=None, legend_loc='upper right',
-                base_fontsize=22, base_linewidth=4, font_family='Arial',
-                x_tick_rotation=45, y_tick_rotation=0, cbar=None):
-    """
-    Simple, size-aware plot styling helper (no class needed).
-    - ax: target axes (defaults to current)
-    - title: plot title
-    - legend_loc: legend location if <=4 items; otherwise placed outside
-    - base_fontsize/base_linewidth: scaled relative to ~12-inch fig
-    - font_family: e.g., 'Arial'
-    - x_tick_rotation: rotation angle for x tick labels
-    - cbar: optional matplotlib Colorbar to style
-    """
-    ax = ax if ax is not None else plt.gca()
-    fig = ax.figure
-
-    # Scale with figure size (reference ~12 inches)
-    fig_w, fig_h = fig.get_size_inches()
-    scale = (fig_w + fig_h) / 2.0
-    fontsize = int(base_fontsize * scale / 12.0)
-    linewidth = base_linewidth * scale / 12.0
-
-    # Global-ish rc tweaks
-    plt.rcParams['font.sans-serif'] = font_family
-    plt.rcParams['font.size'] = fontsize
-    plt.rcParams['axes.titlesize'] = fontsize
-    plt.rcParams['axes.labelsize'] = fontsize
-    plt.rcParams['xtick.labelsize'] = fontsize
-    plt.rcParams['ytick.labelsize'] = fontsize
-    plt.rcParams['legend.fontsize'] = fontsize
-    plt.rcParams['lines.linewidth'] = linewidth-4
-
-    # Labels and title
-    ax.set_title(title if title else '', fontsize=fontsize)
-    ax.set_xlabel(ax.get_xlabel(), fontsize=fontsize)
-    ax.set_ylabel(ax.get_ylabel(), fontsize=fontsize)
-    ax.tick_params(axis='both', labelsize=fontsize)
-    plt.xticks(rotation=x_tick_rotation)
-
-    if y_tick_rotation == 90:
-        # Rotate y ticks and center them on the tick mark (keep outside)
-        for lbl in ax.get_yticklabels():
-            lbl.set_rotation(90)
-            lbl.set_rotation_mode('anchor')
-            lbl.set_va('center')      # center along the tick
-            lbl.set_ha('center')      # tick goes through the middle of the label
-    else:
-        plt.yticks(rotation=y_tick_rotation)
-
-    # Line widths for existing lines
-    for line in ax.get_lines():
-        line.set_linewidth(linewidth)
-
-    # Legend logic
-    handles, labels = ax.get_legend_handles_labels()
-    if len(labels) == 1:
-        pass
-    elif len(labels) > 4:
-        ax.legend(frameon=True, fancybox=False, edgecolor='black', framealpha=1, facecolor='white',
-                  loc='center left', bbox_to_anchor=(1, 0.5), ncol=1)
-    elif len(labels) > 1:
-        ax.legend(frameon=True, fancybox=False, edgecolor='black', framealpha=1, facecolor='white',
-                  loc=legend_loc, ncol=1)
-
-    # Colorbar styling (optional)
-    if cbar is not None:
-        cbar.ax.tick_params(labelsize=fontsize)
-        cbar.set_label(cbar.ax.get_ylabel(), fontsize=fontsize)
-
-    ax.grid(True)
-    plt.tight_layout()
-
-def format_axes_coords(ax=None, x_step=None, y_step=None, thousands='none', unit=None,
-                       decimals=0, tick_len=6, tick_pad=6,
-                       hide_lower_edge=True, avoid_overlap=True, overlap_pad_px=2):
-    """
-    Format axis ticks for projected map coordinates (e.g., EPSG:2056).
-    - x_step/y_step: major tick spacing in map units (e.g., 200)
-    - thousands: 'none' | 'space' | 'comma' | 'apostrophe'
-    - unit: append unit string (e.g., 'm') or None
-    - decimals: number of decimals (0 -> clean integers)
-    - tick_len/tick_pad: keep ticks outside the plot
-    - hide_lower_edge: hide tick labels sitting exactly on left/bottom border
-    - avoid_overlap: hide tick labels that would overlap neighboring labels
-    - overlap_pad_px: padding (px) used when checking overlap
-    """
-    ax = ax or plt.gca()
-
-    if x_step is not None:
-        ax.xaxis.set_major_locator(MultipleLocator(x_step))
-    if y_step is not None:
-        ax.yaxis.set_major_locator(MultipleLocator(y_step))
-
-    def _fmt(v):
-        if decimals == 0:
-            base = f"{int(round(v))}"
-        else:
-            base = f"{v:.{decimals}f}"
-        if thousands != 'none' and decimals == 0:
-            if thousands == 'space':
-                base = f"{int(round(v)):,}".replace(',', ' ')
-            elif thousands == 'comma':
-                base = f"{int(round(v)):,}"
-            elif thousands == 'apostrophe':
-                base = f"{int(round(v)):,}".replace(',', "'")
-        return f"{base} {unit}" if unit else base
-
-    ax.xaxis.set_major_formatter(FuncFormatter(lambda val, pos: _fmt(val)))
-    ax.yaxis.set_major_formatter(FuncFormatter(lambda val, pos: _fmt(val)))
-
-    # Keep ticks outside and suppress offset/scientific notation
-    ax.tick_params(axis='both', which='both', direction='out', length=tick_len, pad=tick_pad)
-    ax.xaxis.get_offset_text().set_visible(False)
-    ax.yaxis.get_offset_text().set_visible(False)
-
-    # Hide labels at the lower/left border to avoid corner overlap
-    if hide_lower_edge:
-        xmin, xmax = ax.get_xlim()
-        ymin, ymax = ax.get_ylim()
-        xticks = ax.get_xticks()
-        yticks = ax.get_yticks()
-        atol_x = (x_step or 1.0) * 0.01
-        atol_y = (y_step or 1.0) * 0.01
-        for xv, lbl in zip(xticks, ax.get_xticklabels()):
-            if np.isclose(xv, min(xmin, xmax), atol=atol_x):
-                lbl.set_visible(False)
-        for yv, lbl in zip(yticks, ax.get_yticklabels()):
-            if np.isclose(yv, min(ymin, ymax), atol=atol_y):
-                lbl.set_visible(False)
-
-    # Hide overlapping tick labels (both axes)
-    if avoid_overlap:
-        fig = ax.figure
-        try:
-            fig.canvas.draw()  # realize text positions
-            renderer = fig.canvas.get_renderer()
-            # X labels
-            kept = []
-            for lbl in ax.get_xticklabels():
-                if not lbl.get_visible() or not lbl.get_text():
-                    continue
-                bb = lbl.get_window_extent(renderer=renderer)
-                bb = bb.expanded((bb.width + overlap_pad_px)/bb.width,
-                                 (bb.height + overlap_pad_px)/bb.height)
-                if any(bb.overlaps(b) for b in kept):
-                    lbl.set_visible(False)
-                else:
-                    kept.append(bb)
-            # Y labels
-            kept = []
-            for lbl in ax.get_yticklabels():
-                if not lbl.get_visible() or not lbl.get_text():
-                    continue
-                bb = lbl.get_window_extent(renderer=renderer)
-                bb = bb.expanded((bb.width + overlap_pad_px)/bb.width,
-                                 (bb.height + overlap_pad_px)/bb.height)
-                if any(bb.overlaps(b) for b in kept):
-                    lbl.set_visible(False)
-                else:
-                    kept.append(bb)
-        except Exception:
-            pass
-
-def _to_float(val: str):
-    if val is None:
-        return np.nan
-    s = str(val).strip()
-    if s == '' or s.lower().startswith('not measured'):
-        return np.nan
-    # Remove spaces, apostrophes, narrow spaces
-    s = s.replace('\u00A0', '').replace('\u202F', '').replace("'", '').replace(' ', '')
-    # Keep only digits, sign, separators
-    s = re.sub(r'[^0-9,.\-]', '', s)
-    if s.count(',') and s.count('.'):
-        # Decide which is decimal: the rightmost separator
-        if s.rfind(',') > s.rfind('.'):
-            s = s.replace('.', '')
-            s = s.replace(',', '.')
-        else:
-            s = s.replace(',', '')
-    else:
-        s = s.replace(',', '.')
-    try:
-        return float(s)
-    except Exception:
-        return np.nan
-
 def load_borehole_positions(
     path: str,
     epsg: int = 2056,
@@ -526,4 +317,101 @@ def load_borehole_positions(
             crs=f"EPSG:{epsg}"
         ).drop(columns=['date_parsed'])
 
+        # Enforce no duplicate columns
+        boreholes_gdf = boreholes_gdf.loc[:, ~boreholes_gdf.columns.duplicated()]
+
     return boreholes_gdf, unmeasured
+
+def _to_float(val: str):
+    if val is None:
+        return np.nan
+    s = str(val).strip()
+    if s == '' or s.lower().startswith('not measured'):
+        return np.nan
+    # Remove spaces, apostrophes, narrow spaces
+    s = s.replace('\u00A0', '').replace('\u202F', '').replace("'", '').replace(' ', '')
+    # Keep only digits, sign, separators
+    s = re.sub(r'[^0-9,.\-]', '', s)
+    if s.count(',') and s.count('.'):
+        # Decide which is decimal: the rightmost separator
+        if s.rfind(',') > s.rfind('.'):
+            s = s.replace('.', '')
+            s = s.replace(',', '.')
+        else:
+            s = s.replace(',', '')
+    else:
+        s = s.replace(',', '.')
+    try:
+        return float(s)
+    except Exception:
+        return np.nan
+
+def _order_along_track(x: np.ndarray, y: np.ndarray, method: str = "pca") -> np.ndarray:
+    """
+    Return indices that sort points along the main line.
+    - 'pca': project onto 1st principal component and sort by projection
+    - 'x'|'y': sort by X or Y
+    """
+    if method == "x":
+        return np.argsort(x)
+    if method == "y":
+        return np.argsort(y)
+    # PCA-based ordering (robust for tilted lines)
+    coords = np.c_[x, y].astype(float)
+    ctr = coords - coords.mean(axis=0, keepdims=True)
+    # 2D SVD -> first right-singular vector gives principal direction
+    _, _, vh = np.linalg.svd(ctr, full_matrices=False)
+    d = ctr @ vh[0]          # projection on first PC
+    return np.argsort(d)
+
+def extract_profile_table(df_or_paths, profile_id, *, order_method="pca"):
+    """
+    Build a profile table for one 'profile' id from the original TXT content.
+    Input can be:
+      - DataFrame from read_thickness_txt (or concat of several),
+      - path or list of paths to TXT files.
+    Returns a DataFrame with columns:
+      ['profile','x','y','zsurf','zbed','thickness','distance']
+    """
+    # Load if paths were provided
+    if isinstance(df_or_paths, (str, bytes)):
+        df = read_thickness_txt(df_or_paths)
+    elif isinstance(df_or_paths, list):
+        frames = [read_thickness_txt(p) for p in df_or_paths]
+        df = pd.concat(frames, ignore_index=True)
+    else:
+        df = df_or_paths.copy()
+
+    if 'profile' not in df.columns:
+        raise ValueError("Input must contain a 'profile' column.")
+    prof = df[df['profile'] == profile_id].copy()
+    if prof.empty:
+        raise ValueError(f"No rows found for profile={profile_id}")
+
+    # Ensure required columns exist
+    if 'zsurf' not in prof.columns and 'zbed' not in prof.columns and 'thickness' not in prof.columns:
+        raise ValueError("Need at least zsurf+thickness or zbed to build a profile.")
+
+    # Compute missing elevations if needed
+    if 'zsurf' not in prof.columns and 'zbed' in prof.columns and 'thickness' in prof.columns:
+        prof['zsurf'] = prof['zbed'] + prof['thickness']
+    if 'zbed' not in prof.columns:
+        if 'zsurf' in prof.columns and 'thickness' in prof.columns:
+            prof['zbed'] = prof['zsurf'] - prof['thickness']
+        else:
+            raise ValueError("Cannot compute 'zbed'; provide zsurf and thickness or zbed directly.")
+    if 'thickness' not in prof.columns:
+        prof['thickness'] = prof['zsurf'] - prof['zbed']
+
+    # Drop rows without geometry/elevations
+    prof = prof.dropna(subset=['x','y','zsurf','zbed','thickness']).copy()
+
+    # Order points along-track
+    idx = _order_along_track(prof['x'].to_numpy(), prof['y'].to_numpy(), method=order_method)
+    prof = prof.iloc[idx].reset_index(drop=True)
+
+    # Cumulative distance in meters (planimetric)
+    dx = np.diff(prof['x'].to_numpy(), prepend=prof['x'].iloc[0])
+    dy = np.diff(prof['y'].to_numpy(), prepend=prof['y'].iloc[0])
+    prof['distance'] = np.cumsum(np.hypot(dx, dy))
+    return prof[['profile','x','y','zsurf','zbed','thickness','distance']]
