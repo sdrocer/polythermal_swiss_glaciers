@@ -8,6 +8,7 @@ from rasterio.transform import from_origin
 from rasterio.features import geometry_mask
 from shapely.geometry import Point
 from scipy.interpolate import griddata
+from scipy.interpolate import Rbf
 from shapely.ops import unary_union
 from io import BytesIO
 
@@ -40,17 +41,21 @@ def load_points_from_txt(paths, epsg=2056, drop_duplicates=True, aggregate_dupli
     """
     Load multiple TXT files and return a GeoDataFrame of points in EPSG:epsg.
     Optionally aggregate duplicate XY by mean/median/last on thickness.
+    PRESERVES the 'profile' column if present.
     """
     frames = [read_thickness_txt(p) for p in paths]
     df = pd.concat(frames, ignore_index=True)
     df = df.replace([np.inf, -np.inf], np.nan)
     df = df.dropna(subset=['x', 'y', 'thickness'])
 
+    # Preserve 'profile' column during aggregation
     if drop_duplicates:
         if aggregate_duplicates in ('mean', 'median'):
-            # Use string agg to avoid FutureWarning
-            df = (df.groupby(['x', 'y'], as_index=False)
-                    .agg(thickness=( 'thickness', aggregate_duplicates )))
+            # Aggregate thickness, but keep first profile id for each (x, y)
+            df = (df.sort_values('profile')  # or sort by another logic if needed
+                    .groupby(['x', 'y'], as_index=False)
+                    .agg(profile=('profile', 'first'),
+                         thickness=('thickness', aggregate_duplicates)))
         elif aggregate_duplicates == 'last':
             df = df.sort_index()  # keep input order
             df = df.drop_duplicates(subset=['x', 'y'], keep='last')
@@ -64,10 +69,10 @@ def load_points_from_txt(paths, epsg=2056, drop_duplicates=True, aggregate_dupli
     )
     return gdf
 
-def interpolate_to_grid(points_gdf, value_col='thickness', pixel_size=20.0, method='linear', polygon_mask: gpd.GeoDataFrame|None=None, padding=0.0):
+def interpolate_thickness_to_grid(points_gdf, value_col='thickness', pixel_size=20.0, rbf_function='linear', polygon_mask: gpd.GeoDataFrame|None=None, padding=0.0):
     """
-    Interpolate scattered points to a regular grid using scipy.griddata.
-    method: 'linear' | 'cubic' | 'nearest'
+    Interpolate scattered ice thickness points to a regular grid using RBF.
+    rbf_function: 'linear' | 'multiquadric' | 'inverse' | 'gaussian' | 'thin_plate' | 'cubic' | 'quintic'
     polygon_mask: optional glacier outline (same CRS) to mask outside to NaN.
     Returns grid, transform, crs
     """
@@ -86,11 +91,13 @@ def interpolate_to_grid(points_gdf, value_col='thickness', pixel_size=20.0, meth
         np.linspace(ymax, ymax - pixel_size*(height-1), height)
     )
 
-    grid = griddata(points=(X, Y), values=Z, xi=(grid_x, grid_y), method=method)
+    # RBF interpolation (extrapolates smoothly)
+    rbf = Rbf(X, Y, Z, function=rbf_function)
+    grid = rbf(grid_x, grid_y)
     transform = from_origin(xmin, ymax, pixel_size, pixel_size)
 
     if polygon_mask is not None and not polygon_mask.empty:
-        mask = geometry_mask(                     # use imported function
+        mask = geometry_mask(
             [geom for geom in polygon_mask.geometry],
             out_shape=grid.shape,
             transform=transform,

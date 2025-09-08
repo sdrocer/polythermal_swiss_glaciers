@@ -1,6 +1,7 @@
 import pandas as pd
 import numpy as np
 import re
+from scipy.ndimage import gaussian_filter1d # for smoothing
 
 # plotting
 import matplotlib.pyplot as plt
@@ -738,3 +739,217 @@ def read_thermistor_depths(depth_file):
         depths[thermistor_num] = depth
 
     return depths
+
+def interpolate_temperature_stratified(
+    bh_locs, bh_surf, bh_depths_list, bh_temps_list,
+    d, z_s, z_b,
+    n_depth=200, n_elev=300
+):
+    """
+    Interpolates temperature in a stratified (depth-below-surface) manner along a profile.
+    Uses inverse distance weighting (IDW) for smooth horizontal interpolation.
+    Returns: grid_temp (n_elev, n_x), grid_elev (n_elev,)
+    """
+    import numpy as np
+
+    # 1. Build a uniform depth grid below surface (0 = surface)
+    max_depth = max([np.max(darr) for darr in bh_depths_list])
+    depth_grid = np.linspace(0.0, float(max_depth), n_depth)  # meters below local surface
+
+    # 2. Interpolate each borehole profile onto depth_grid (clamp outside to nearest sensor value)
+    bh_on_depth = []
+    for depths_arr, temps_arr in zip(bh_depths_list, bh_temps_list):
+        if depths_arr.size == 1:
+            vals = np.full_like(depth_grid, float(temps_arr[0]), dtype=float)
+        else:
+            vals = np.interp(depth_grid, depths_arr, temps_arr, left=temps_arr[0], right=temps_arr[-1])
+        bh_on_depth.append(vals)
+    bh_on_depth = np.vstack(bh_on_depth)  # shape (n_bh, n_depth)
+
+    # 3. Horizontally interpolate for each depth level across boreholes using IDW
+    grid_x = d
+    n_x = grid_x.size
+    grid_temp_depth_x = np.full((n_depth, n_x), np.nan, dtype=float)
+    for j, depth_val in enumerate(depth_grid):
+        t_bh = bh_on_depth[:, j]
+        # Inverse distance weighting (IDW)
+        for ix, x in enumerate(grid_x):
+            dists = np.abs(bh_locs - x)
+            # Avoid division by zero
+            dists[dists == 0] = 1e-6
+            weights = 1 / dists
+            weights /= weights.sum()
+            grid_temp_depth_x[j, ix] = np.sum(weights * t_bh)
+
+    # 4. Convert depth-grid -> global elevation grid for plotting:
+    elev_min = float(np.nanmin(z_b)) - 1.0
+    elev_max = float(np.nanmax(z_s)) + 1.0
+    grid_elev = np.linspace(elev_min, elev_max, n_elev)  # ascending bottom->top
+    grid_temp = np.full((n_elev, n_x), np.nan, dtype=float)
+
+    # 5. For each column, compute elevation positions of depth_grid and resample onto grid_elev
+    for i in range(n_x):
+        surf_i = float(np.interp(grid_x[i], d, z_s))
+        elev_at_depth = surf_i - depth_grid
+        order = np.argsort(elev_at_depth)
+        elev_sorted = elev_at_depth[order]
+        temp_sorted = grid_temp_depth_x[:, i][order]
+        col_vals = np.interp(grid_elev, elev_sorted, temp_sorted, left=np.nan, right=np.nan)
+        bed_i = float(np.interp(grid_x[i], d, z_b))
+        col_vals[grid_elev > surf_i] = np.nan
+        col_vals[grid_elev < bed_i] = np.nan
+        grid_temp[:, i] = col_vals
+        # Fill below deepest thermistor with its value (down to bed)
+        depths_arr = bh_depths_list[np.argmin(np.abs(bh_locs - grid_x[i]))]
+        temps_arr = bh_temps_list[np.argmin(np.abs(bh_locs - grid_x[i]))]
+        if len(depths_arr) > 0:
+            deepest_depth = np.max(depths_arr)
+            deepest_temp = temps_arr[np.argmax(depths_arr)]
+            deepest_elev = surf_i - deepest_depth
+            mask = (grid_elev < deepest_elev) & (grid_elev >= bed_i)
+            grid_temp[mask, i] = deepest_temp
+
+    # 6. Improved temperate layer: interpolate depth to 0°C isotherm and fill below with 0°C
+    temp_base_depths = []
+    for depths_arr, temps_arr in zip(bh_depths_list, bh_temps_list):
+        # Interpolate to find depth where T=0°C
+        if np.any(temps_arr == 0.0):
+            idx = np.where(temps_arr == 0.0)[0][0]
+            temp_base_depths.append(depths_arr[idx])
+        elif np.any(temps_arr > 0.0) and np.any(temps_arr < 0.0):
+            idx = np.where(temps_arr < 0.0)[0][-1]
+            d0, d1 = depths_arr[idx], depths_arr[idx+1]
+            t0, t1 = temps_arr[idx], temps_arr[idx+1]
+            d_zero = d0 + (0.0 - t0) * (d1 - d0) / (t1 - t0)
+            temp_base_depths.append(d_zero)
+        else:
+            temp_base_depths.append(np.max(depths_arr))  # fallback: deepest sensor
+    temp_base_depths = np.array(temp_base_depths)
+    temp_base_depths_interp = np.interp(grid_x, bh_locs, temp_base_depths)
+    # --- Add smoothing here ---
+    temp_base_depths_interp_smooth = gaussian_filter1d(temp_base_depths_interp, sigma=2)
+
+    transition_thickness = 2.0  # meters
+
+    for i in range(n_x):
+        surf_i = float(np.interp(grid_x[i], d, z_s))
+        bed_i = float(np.interp(grid_x[i], d, z_b))
+        temp_base_elev = surf_i - temp_base_depths_interp_smooth[i]
+        # Clamp the 0°C isotherm between bed and surface
+        temp_base_elev = np.clip(temp_base_elev, bed_i, surf_i)
+        for j, elev in enumerate(grid_elev):
+            # If below the 0°C isotherm, assign 0°C (temperate)
+            if bed_i <= elev < temp_base_elev:
+                grid_temp[j, i] = 0.0
+            # If within the transition zone, blend
+            elif temp_base_elev <= elev < temp_base_elev + transition_thickness and elev < surf_i:
+                alpha = (elev - temp_base_elev) / transition_thickness
+                grid_temp[j, i] = (1 - alpha) * 0.0 + alpha * grid_temp[j, i]
+            # If above the surface, keep as NaN (already set)
+
+    # 7. Fill fully-NaN columns with nearest borehole-derived column (prevents gaps)
+    for i in range(n_x):
+        if np.all(np.isnan(grid_temp[:, i])):
+            j_near = int(np.argmin(np.abs(bh_locs - grid_x[i])))
+            surf_bh = bh_surf[j_near]
+            elev_at_depth_bh = surf_bh - depth_grid
+            order = np.argsort(elev_at_depth_bh)
+            elev_sorted = elev_at_depth_bh[order]
+            temp_sorted = bh_on_depth[j_near, :][order]
+            col_vals = np.interp(grid_elev, elev_sorted, temp_sorted, left=np.nan, right=np.nan)
+            bed_i = float(np.interp(grid_x[i], d, z_b))
+            col_vals[grid_elev > np.interp(grid_x[i], d, z_s)] = np.nan
+            col_vals[grid_elev < bed_i] = np.nan
+            grid_temp[:, i] = col_vals
+
+    # 8. Clip to measured bounds (avoid artificial extremes)
+    measured_vals = np.hstack(bh_temps_list)
+    meas_min = float(np.nanmin(measured_vals))
+    meas_max = float(np.nanmax(measured_vals))
+    grid_temp = np.where(np.isfinite(grid_temp), np.clip(grid_temp, meas_min, meas_max), np.nan)
+
+    return grid_temp, grid_elev
+
+def interpolate_temperature_weighted_rbf(
+    profile_distances,
+    z_surf,
+    z_bed,
+    borehole_coords_df,
+    temp_data_dict,
+    depth_dict,
+    n_elev=300,
+    depth_weight=1.5,
+    rbf_function='linear'
+):
+    """
+    Interpolate englacial temperature using a weighted RBF in (distance, elevation) space.
+    depth_weight: scales the importance of elevation vs. horizontal distance.
+    Returns: grid_temp (n_elev, n_x), grid_elev (n_elev,)
+    """
+    import numpy as np
+    from scipy.interpolate import Rbf
+
+    # Clean borehole coordinates (replace commas with dots)
+    borehole_coords_df = borehole_coords_df.copy()
+    borehole_coords_df['x'] = borehole_coords_df['x'].astype(str).str.replace(',', '.').astype(float)
+    borehole_coords_df['y'] = borehole_coords_df['y'].astype(str).str.replace(',', '.').astype(float)
+
+    d = profile_distances
+    z_s = z_surf
+    z_b = z_bed
+
+    # Collect borehole positions and sensor depths/temps for interpolation
+    interp_points = []
+    interp_temps = []
+    for _, bh_row in borehole_coords_df.iterrows():
+        name = bh_row['name']
+        bh_x = float(str(bh_row['x']).replace(',', '.'))
+        bh_y = float(str(bh_row['y']).replace(',', '.'))
+        profile_xy = None
+        if 'x' in borehole_coords_df and 'y' in borehole_coords_df:
+            profile_xy = np.column_stack([borehole_coords_df['x'], borehole_coords_df['y']])
+        if profile_xy is not None:
+            dists = np.sqrt((profile_xy[:,0] - bh_x)**2 + (profile_xy[:,1] - bh_y)**2)
+            profile_dist_idx = np.argmin(dists)
+            profile_dist = d[profile_dist_idx]
+            surface_elev = z_s[profile_dist_idx]
+        else:
+            profile_dist = bh_x
+            surface_elev = np.interp(profile_dist, d, z_s)
+
+        if name in temp_data_dict and name in depth_dict:
+            temps = temp_data_dict[name]
+            depths = depth_dict[name]
+            for probe, depth in depths.items():
+                if probe in temps:
+                    therm_elev = surface_elev - depth
+                    interp_points.append([profile_dist, therm_elev])
+                    interp_temps.append(temps[probe])
+
+    interp_points = np.array(interp_points)
+    interp_temps = np.array(interp_temps)
+
+    # Weighted coordinates: scale elevation
+    interp_points_weighted = interp_points.copy()
+    interp_points_weighted[:, 1] *= depth_weight
+
+    # Create grid for heatmap
+    grid_x = d
+    grid_y = np.linspace(z_b.min(), z_s.max(), n_elev)
+    grid_xx, grid_yy = np.meshgrid(grid_x, grid_y)
+    grid_xx_weighted = grid_xx
+    grid_yy_weighted = grid_yy * depth_weight
+
+    # RBF interpolation
+    rbf = Rbf(interp_points_weighted[:, 0], interp_points_weighted[:, 1], interp_temps, function=rbf_function)
+    grid_temp = rbf(grid_xx_weighted, grid_yy_weighted)
+
+    # Mask grid_temp outside glacier body
+    for i, x in enumerate(grid_x):
+        bed = np.interp(x, d, z_b)
+        surf = np.interp(x, d, z_s)
+        for j, y in enumerate(grid_y):
+            if not (bed < y < surf):
+                grid_temp[j, i] = np.nan
+
+    return grid_temp, grid_y

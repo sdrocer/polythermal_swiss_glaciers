@@ -279,3 +279,215 @@ zero_deg_offsets_logger13_exp3 = logger_13_exp3.plot_ntc_icebath_calibration(dat
 zero_deg_offsets_logger14_exp3 = logger_14_exp3.plot_ntc_icebath_calibration(data_10m_chain_reliability_exp3, savepath=output_path + 'thermistor_calibration/', title='Logger #14 - 0deg offset in ice bath - Exp3') 
 zero_deg_offsets_logger15_exp3 = logger_15_exp3.plot_ntc_icebath_calibration(data_10m_chain_reliability_exp3, savepath=output_path + 'thermistor_calibration/', title='Logger #15 - 0deg offset in ice bath - Exp3')
 zero_deg_offsets_logger16_exp3 = logger_16_exp3.plot_ntc_icebath_calibration(data_10m_chain_reliability_exp3, savepath=output_path + 'thermistor_calibration/', title='Logger #16 - 0deg offset in ice bath - Exp3')
+
+
+
+def plot_icetemp_profile_piecewise(
+    profile_df,
+    borehole_coords_df,
+    temp_data_dict,
+    depth_dict,
+    ax=None,
+    title=None,
+    cmap=None,
+    vmin=None,
+    vmax=None,
+    flip='auto',
+    plot_contours=True,
+    n_elev=300
+):
+    """
+    Piecewise linear interpolation of ice temperature profile.
+
+    Approach:
+    - For each borehole build a 1D temperature-vs-depth (depth below local surface).
+    - Project each borehole profile onto a single global elevation grid (so layers
+      slope with the surface).
+    - Linearly blend profiles horizontally between nearest boreholes.
+    - Clamp extrapolation to nearest sensor values and fill fully-NaN columns
+      from the nearest borehole to avoid gaps.
+    """
+    import numpy as np
+    import matplotlib.pyplot as plt
+    from matplotlib.colors import ListedColormap
+    import cmcrameri.cm as cmc
+
+    ax = ax or plt.subplots(figsize=(10, 5), dpi=150)[1]
+
+    # Required profile arrays
+    d0 = profile_df['distance'].to_numpy()
+    z_s = profile_df['zsurf'].to_numpy()
+    z_b = profile_df['zbed'].to_numpy()
+
+    # Optionally flip profile direction to consistent left->right
+    d = d0.copy()
+    if flip == 'auto':
+        if z_s[-1] < z_s[0]:
+            z_s = z_s[::-1]; z_b = z_b[::-1]; d = d0.max() - d0[::-1]
+    elif flip is True:
+        z_s = z_s[::-1]; z_b = z_b[::-1]; d = d0.max() - d0[::-1]
+
+    # Plot surface and bed outlines
+    ax.plot(d, z_s, color='k', linewidth=1.5, label='Surface')
+    ax.plot(d, z_b, color='k', linewidth=1.5, linestyle='--', label='Bed')
+
+    # Collect borehole locations and 1D (depth,temp) profiles (depth = below local surface)
+    bh_locs = []
+    bh_profiles = []  # (depths_array, temps_array, surface_elev)
+    for _, bh_row in borehole_coords_df.iterrows():
+        name = bh_row['name']
+        bh_x = float(str(bh_row['x']).replace(',', '.'))
+        bh_y = float(str(bh_row['y']).replace(',', '.'))
+
+        # find nearest point along profile (if profile has x,y)
+        profile_xy = np.column_stack([profile_df['x'], profile_df['y']]) if ('x' in profile_df and 'y' in profile_df) else None
+        if profile_xy is not None:
+            dists = np.sqrt((profile_xy[:, 0] - bh_x)**2 + (profile_xy[:, 1] - bh_y)**2)
+            idx = np.argmin(dists)
+            profile_dist = d[idx]
+            surf_elev = z_s[idx]
+        else:
+            profile_dist = bh_x
+            surf_elev = float(np.interp(profile_dist, d, z_s))
+
+        if name in temp_data_dict and name in depth_dict:
+            temps = temp_data_dict[name]
+            depths = depth_dict[name]
+            # Collect only sensors present in both dicts and convert to floats
+            items = sorted([
+                (float(depth), float(temps[probe]))
+                for probe, depth in depths.items()
+                if probe in temps and pd.notna(temps[probe])
+            ])
+            if not items:
+                continue
+            depths_arr = np.asarray([it[0] for it in items], dtype=float)
+            temps_arr = np.asarray([it[1] for it in items], dtype=float)
+            # ensure increasing depth order
+            order = np.argsort(depths_arr)
+            depths_arr = depths_arr[order]
+            temps_arr = temps_arr[order]
+            bh_locs.append(profile_dist)
+            bh_profiles.append((depths_arr, temps_arr, float(surf_elev)))
+
+            # plot borehole line and sensors
+            min_elev = surf_elev - float(np.max(depths_arr))
+            ax.plot([profile_dist, profile_dist], [min_elev, surf_elev], color='k', linewidth=1.5)
+            for depth, temp in zip(depths_arr, temps_arr):
+                ax.plot(profile_dist, surf_elev - depth, 'ko', markersize=4)
+            ax.text(profile_dist, surf_elev + 6, name, color='red', fontsize=10, ha='center', va='bottom', zorder=12)
+
+    if len(bh_locs) == 0:
+        raise ValueError("No borehole profiles found in provided dicts.")
+
+    # sort boreholes along profile
+    bh_locs = np.array(bh_locs)
+    sort_idx = np.argsort(bh_locs)
+    bh_locs = bh_locs[sort_idx]
+    bh_profiles = [bh_profiles[i] for i in sort_idx]
+
+    # measured temperature bounds (for clipping/color scaling)
+    measured_vals = np.hstack([p[1] for p in bh_profiles])
+    meas_min = float(np.nanmin(measured_vals))
+    meas_max = float(np.nanmax(measured_vals))
+
+    # Build global regular elevation grid (imshow requires rectangular grid)
+    elev_min = float(np.nanmin(z_b)) - 1.0
+    elev_max = float(np.nanmax(z_s)) + 1.0
+    grid_elev = np.linspace(elev_min, elev_max, n_elev)  # ascending (bottom->top)
+    grid_x = d
+    grid_xx, grid_yy = np.meshgrid(grid_x, grid_elev)  # grid_yy are elevations
+
+    # Project each borehole's profile onto the global elevation grid.
+    # depth_on_grid = surface_bh - elevation  (positive below surface)
+    interp_profiles_on_elev = []
+    for depths_arr, temps_arr, surf_elev in bh_profiles:
+        depths_on_grid = surf_elev - grid_elev  # positive below surface
+        # clamp extrapolation to nearest sensor (avoid runaway linear extrapolation)
+        if depths_arr.size == 1:
+            vals = np.full_like(depths_on_grid, temps_arr[0], dtype=float)
+        else:
+            vals = np.interp(depths_on_grid, depths_arr, temps_arr, left=temps_arr[0], right=temps_arr[-1])
+        # values above the borehole surface are invalid -> NaN
+        vals[grid_elev > surf_elev] = np.nan
+        interp_profiles_on_elev.append(vals)
+    interp_profiles_on_elev = np.array(interp_profiles_on_elev)  # shape (n_bh, n_elev)
+
+    # Horizontal blending: for each distance column, interpolate between nearest boreholes
+    grid_temp = np.full((grid_elev.size, grid_x.size), np.nan, dtype=float)
+    for i, x in enumerate(grid_x):
+        if x <= bh_locs[0]:
+            grid_temp[:, i] = interp_profiles_on_elev[0]
+        elif x >= bh_locs[-1]:
+            grid_temp[:, i] = interp_profiles_on_elev[-1]
+        else:
+            right = np.searchsorted(bh_locs, x)
+            left = right - 1
+            x0, x1 = bh_locs[left], bh_locs[right]
+            t0 = interp_profiles_on_elev[left]
+            t1 = interp_profiles_on_elev[right]
+            w = (x - x0) / (x1 - x0) if (x1 - x0) != 0 else 0.0
+            blended = (1 - w) * t0 + w * t1
+            both_nan = np.isnan(t0) & np.isnan(t1)
+            blended[both_nan] = np.nan
+            grid_temp[:, i] = blended
+
+    # Fill entirely-NaN columns with nearest borehole profile (prevents gaps)
+    for i, x in enumerate(grid_x):
+        if np.all(np.isnan(grid_temp[:, i])):
+            j = int(np.argmin(np.abs(bh_locs - x)))
+            grid_temp[:, i] = interp_profiles_on_elev[j]
+
+    # Mask above surface and below bed for each column
+    for i, x in enumerate(grid_x):
+        surf_at_x = float(np.interp(x, d, z_s))
+        bed_at_x = float(np.interp(x, d, z_b))
+        above = grid_elev > surf_at_x
+        below = grid_elev < bed_at_x
+        grid_temp[above, i] = np.nan
+        grid_temp[below, i] = np.nan
+
+    # Clip to measured bounds (avoid improbable extremes)
+    grid_temp = np.where(np.isfinite(grid_temp), np.clip(grid_temp, meas_min, meas_max), np.nan)
+
+    # Colormap: blue->...->red (preserve previous stylistic choice)
+    base = cmc.vik(np.linspace(0, 0.6, 128))
+    red = np.array(cmc.vik(1.0)).reshape(1, -1)
+    colors = np.vstack([base, red])
+    cmap_use = ListedColormap(colors)
+
+    # Plot heatmap (distance x elevation)
+    im = ax.imshow(
+        grid_temp,
+        extent=[grid_x.min(), grid_x.max(), grid_elev.min(), grid_elev.max()],
+        origin='lower',
+        aspect='auto',
+        cmap=cmap_use if cmap is None else cmap,
+        vmin=meas_min if vmin is None else vmin,
+        vmax=meas_max if vmax is None else vmax,
+        alpha=0.85,
+        zorder=0
+    )
+
+    # Contours (isotherms)
+    if plot_contours:
+        levels = np.linspace(meas_min, meas_max, 12)
+        ax.contour(grid_xx, grid_yy, grid_temp, levels=levels, colors='k', linewidths=0.6, alpha=0.5)
+
+    # Colorbar
+    cb = plt.colorbar(im, ax=ax, label='Ice Temperature [°C]')
+    n_ticks = 6
+    tick_values = np.linspace(meas_min, meas_max, n_ticks)
+    cb.set_ticks(tick_values)
+    cb.set_ticklabels([f"{v:.2f}" for v in tick_values])
+
+    ax.set_ylim(np.min(z_b) - 2, np.max(z_s) + 2)
+    ax.set_xlabel("Distance [m]")
+    ax.set_ylabel("Elevation [m]")
+    if title:
+        ax.set_title(title)
+    ax.grid(True, alpha=0.3)
+    ax.legend(loc='best', frameon=True)
+    format_plot(ax=ax, title=title, x_tick_rotation=0, legend_loc='upper left', adjust_linewidths=False)
+    plt.tight_layout()
+    return ax.figure, ax
