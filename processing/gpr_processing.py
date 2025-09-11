@@ -37,31 +37,91 @@ def read_thickness_txt(path):
     df['source'] = path
     return df
 
-def load_points_from_txt(paths, epsg=2056, drop_duplicates=True, aggregate_duplicates='mean'):
+def read_thickness_csv(path):
     """
-    Load multiple TXT files and return a GeoDataFrame of points in EPSG:epsg.
-    Optionally aggregate duplicate XY by mean/median/last on thickness.
-    PRESERVES the 'profile' column if present.
+    Read one CSV file with GPR interpretation data.
+    Expected columns: Profile, X, Y, Depth, Elevation
+    Returns a DataFrame with standardized columns:
+    ['profile','x','y','zsurf','zbed','thickness']
     """
+    df = pd.read_csv(path, engine="python")
+    
+    # Normalize column names (case insensitive)
+    df.columns = [c.strip().lower() for c in df.columns]
+    
+    # Create rename mapping
+    rename_map = {
+        'profile': 'profile',
+        'x': 'x', 
+        'y': 'y',
+        'depth': 'thickness',  # Depth becomes thickness
+        'elevation': 'zsurf'   # Surface elevation
+    }
+    
+    # Check for required columns
+    required_cols = ['profile', 'x', 'y', 'depth', 'elevation']
+    missing = [c for c in required_cols if c not in df.columns]
+    if missing:
+        raise ValueError(f"Missing columns {missing} in {path}")
+    
+    # Rename columns
+    df = df.rename(columns=rename_map)
+    
+    # Calculate bed elevation from surface - thickness
+    df['zbed'] = df['zsurf'] - df['thickness']
+    
+    # Keep only needed columns
+    keep_cols = ['profile', 'x', 'y', 'zsurf', 'zbed', 'thickness']
+    df = df[keep_cols].copy()
+    
+    # Add source file info
+    df['source'] = path
+    
+    return df
+
+def load_points_from_txt(paths, epsg=2056, drop_duplicates=True, aggregate_duplicates='mean', return_type='gdf'):
+    """
+    Load multiple TXT files and return a GeoDataFrame or DataFrame of points in EPSG:epsg.
+    Preserves ALL columns from input files (x, y, profile, thickness, zsurf, zbed, etc.)
+    """
+    if isinstance(paths, (str, bytes)):
+        paths = [paths]
+        
     frames = [read_thickness_txt(p) for p in paths]
     df = pd.concat(frames, ignore_index=True)
     df = df.replace([np.inf, -np.inf], np.nan)
     df = df.dropna(subset=['x', 'y', 'thickness'])
 
-    # Preserve 'profile' column during aggregation
+    # Preserve ALL columns during aggregation
     if drop_duplicates:
         if aggregate_duplicates in ('mean', 'median'):
-            # Aggregate thickness, but keep first profile id for each (x, y)
-            df = (df.sort_values('profile')  # or sort by another logic if needed
+            # Identify numeric columns for aggregation
+            numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
+            agg_dict = {}
+            
+            for col in df.columns:
+                if col in ['x', 'y']:
+                    agg_dict[col] = 'first'  # Keep first coordinate
+                elif col == 'profile':
+                    agg_dict[col] = 'first'  # Keep first profile id
+                elif col in numeric_cols:
+                    agg_dict[col] = aggregate_duplicates  # Aggregate numeric data
+                else:
+                    agg_dict[col] = 'first'  # Keep first value for other columns
+            
+            df = (df.sort_values('profile')
                     .groupby(['x', 'y'], as_index=False)
-                    .agg(profile=('profile', 'first'),
-                         thickness=('thickness', aggregate_duplicates)))
+                    .agg(agg_dict))
         elif aggregate_duplicates == 'last':
-            df = df.sort_index()  # keep input order
+            df = df.sort_index()
             df = df.drop_duplicates(subset=['x', 'y'], keep='last')
         else:
             df = df.drop_duplicates(subset=['x', 'y'])
 
+    if return_type == 'df':
+        return df
+    
+    # Return GeoDataFrame - preserve all columns, just add geometry
     gdf = gpd.GeoDataFrame(
         df,
         geometry=[Point(xy) for xy in zip(df['x'].values, df['y'].values)],
@@ -69,12 +129,106 @@ def load_points_from_txt(paths, epsg=2056, drop_duplicates=True, aggregate_dupli
     )
     return gdf
 
-def interpolate_thickness_to_grid(points_gdf, value_col='thickness', pixel_size=20.0, rbf_function='linear', polygon_mask: gpd.GeoDataFrame|None=None, padding=0.0):
+def load_points_from_csv(paths, epsg=2056, source_epsg=None, drop_duplicates=True, aggregate_duplicates='mean', return_type='gdf'):
     """
-    Interpolate scattered ice thickness points to a regular grid using RBF.
-    rbf_function: 'linear' | 'multiquadric' | 'inverse' | 'gaussian' | 'thin_plate' | 'cubic' | 'quintic'
-    polygon_mask: optional glacier outline (same CRS) to mask outside to NaN.
-    Returns grid, transform, crs
+    Load multiple CSV files with GPR interpretation data.
+    Preserves ALL columns from input files (x, y, profile, thickness, elevation data, etc.)
+    """
+    if isinstance(paths, (str, bytes)):
+        paths = [paths]
+        
+    frames = [read_thickness_csv(p) for p in paths]
+    df = pd.concat(frames, ignore_index=True)
+    
+    # Clean profile column: remove "LINE" prefix and keep only the number
+    if 'profile' in df.columns:
+        df['profile'] = df['profile'].astype(str).str.replace(r'^LINE', '', regex=True, case=False)
+        try:
+            df['profile'] = pd.to_numeric(df['profile'])
+        except (ValueError, TypeError):
+            pass
+    
+    # Clean data
+    df = df.replace([np.inf, -np.inf], np.nan)
+    df = df.dropna(subset=['x', 'y', 'thickness'])
+    
+    # Handle coordinate transformation if needed
+    if source_epsg and source_epsg != epsg:
+        temp_gdf = gpd.GeoDataFrame(
+            df,
+            geometry=[Point(xy) for xy in zip(df['x'].values, df['y'].values)],
+            crs=f"EPSG:{source_epsg}"
+        )
+        temp_gdf = temp_gdf.to_crs(f"EPSG:{epsg}")
+        df['x'] = temp_gdf.geometry.x
+        df['y'] = temp_gdf.geometry.y
+    
+    # Handle duplicates - preserve ALL columns
+    if drop_duplicates:
+        if aggregate_duplicates in ('mean', 'median'):
+            df['x_round'] = df['x'].round(6)
+            df['y_round'] = df['y'].round(6)
+            
+            # Build aggregation dictionary for all columns
+            numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
+            agg_dict = {}
+            
+            for col in df.columns:
+                if col in ['x_round', 'y_round']:
+                    continue  # Skip these temporary columns
+                elif col in ['x', 'y']:
+                    agg_dict[col] = 'first'
+                elif col == 'profile':
+                    agg_dict[col] = 'first'
+                elif col in numeric_cols:
+                    agg_dict[col] = aggregate_duplicates
+                else:
+                    agg_dict[col] = 'first'
+            
+            agg_data = (df.sort_values('profile')
+                           .groupby(['x_round', 'y_round'], as_index=False)
+                           .agg(agg_dict))
+            df = agg_data.drop(columns=['x_round', 'y_round'])
+            
+        elif aggregate_duplicates == 'last':
+            df['x_round'] = df['x'].round(6)
+            df['y_round'] = df['y'].round(6)
+            df = df.sort_index()
+            df = df.drop_duplicates(subset=['x_round', 'y_round'], keep='last')
+            df = df.drop(columns=['x_round', 'y_round'])
+        else:
+            df['x_round'] = df['x'].round(6)
+            df['y_round'] = df['y'].round(6)
+            df = df.drop_duplicates(subset=['x_round', 'y_round'])
+            df = df.drop(columns=['x_round', 'y_round'])
+    
+    if return_type == 'df':
+        return df
+    
+    # Return GeoDataFrame - preserve all columns, just add geometry
+    gdf = gpd.GeoDataFrame(
+        df,
+        geometry=[Point(xy) for xy in zip(df['x'].values, df['y'].values)],
+        crs=f"EPSG:{epsg}"
+    )
+    return gdf
+    
+    # Return GeoDataFrame (default behavior)
+    gdf = gpd.GeoDataFrame(
+        df,
+        geometry=[Point(xy) for xy in zip(df['x'].values, df['y'].values)],
+        crs=f"EPSG:{epsg}"
+    )
+    return gdf
+
+
+def interpolate_thickness_to_grid(points_gdf, value_col='thickness', pixel_size=20.0, rbf_function='linear', polygon_mask: gpd.GeoDataFrame|None=None, padding=0.0, max_rbf_points=15000):
+    """
+    Interpolate scattered ice thickness points to a regular grid.
+    Uses RBF for small datasets, switches to scipy.griddata for large ones.
+    
+    Args:
+        max_rbf_points: Switch to griddata if more points than this (default: 15000)
     """
     crs = points_gdf.crs
     X = np.array([p.x for p in points_gdf.geometry])
@@ -91,9 +245,30 @@ def interpolate_thickness_to_grid(points_gdf, value_col='thickness', pixel_size=
         np.linspace(ymax, ymax - pixel_size*(height-1), height)
     )
 
-    # RBF interpolation (extrapolates smoothly)
-    rbf = Rbf(X, Y, Z, function=rbf_function)
-    grid = rbf(grid_x, grid_y)
+    # Choose interpolation method based on data size
+    n_points = len(X)
+    print(f"Interpolating {n_points} points...")
+    
+    if n_points <= max_rbf_points:
+        print("Using RBF interpolation...")
+        rbf = Rbf(X, Y, Z, function=rbf_function)
+        grid = rbf(grid_x, grid_y)
+    else:
+        print("Using scipy.griddata (faster for large datasets)...")
+        points = np.column_stack([X, Y])
+        grid_points = np.column_stack([grid_x.ravel(), grid_y.ravel()])
+        
+        # Use linear interpolation (fast and stable)
+        grid_flat = griddata(points, Z, grid_points, method='linear', fill_value=np.nan)
+        grid = grid_flat.reshape(grid_x.shape)
+        
+        # Optional: fill NaN holes with nearest neighbor
+        if np.any(np.isnan(grid_flat)):
+            print("Filling holes with nearest neighbor...")
+            grid_flat_filled = griddata(points, Z, grid_points, method='nearest')
+            grid_filled = grid_flat_filled.reshape(grid_x.shape)
+            grid = np.where(np.isnan(grid), grid_filled, grid)
+
     transform = from_origin(xmin, ymax, pixel_size, pixel_size)
 
     if polygon_mask is not None and not polygon_mask.empty:
@@ -319,16 +494,19 @@ def load_borehole_positions(
         boreholes_gdf = gpd.GeoDataFrame(columns=['name','date','x','y','geometry'], crs=f"EPSG:{epsg}")
     else:
         boreholes_gdf = gpd.GeoDataFrame(
-            measured.rename(columns={'x_num':'x', 'y_num':'y'})[['name','date','x','y','date_parsed']],
+            measured.rename(columns={'x_num':'x', 'y_num':'y'})[['name','date','x','y']],
             geometry=[Point(xy) for xy in zip(measured['x_num'], measured['y_num'])],
             crs=f"EPSG:{epsg}"
-        ).drop(columns=['date_parsed'])
+        )
+        # Overwrite x and y with geometry values to ensure consistency
+        boreholes_gdf['x'] = boreholes_gdf.geometry.x
+        boreholes_gdf['y'] = boreholes_gdf.geometry.y
 
         # Enforce no duplicate columns
         boreholes_gdf = boreholes_gdf.loc[:, ~boreholes_gdf.columns.duplicated()]
 
     return boreholes_gdf, unmeasured
-
+    
 def _to_float(val: str):
     if val is None:
         return np.nan
@@ -373,19 +551,21 @@ def _order_along_track(x: np.ndarray, y: np.ndarray, method: str = "pca") -> np.
 
 def extract_profile_table(df_or_paths, profile_id, *, order_method="pca"):
     """
-    Build a profile table for one 'profile' id from the original TXT content.
-    Input can be:
-      - DataFrame from read_thickness_txt (or concat of several),
-      - path or list of paths to TXT files.
-    Returns a DataFrame with columns:
-      ['profile','x','y','zsurf','zbed','thickness','distance']
+    Build a profile table for one 'profile' id. Now a convenience wrapper around load_points_from_*.
     """
-    # Load if paths were provided
+    # Determine if input is TXT or CSV based on file extension or DataFrame columns
     if isinstance(df_or_paths, (str, bytes)):
-        df = read_thickness_txt(df_or_paths)
+        path = df_or_paths
+        if path.lower().endswith('.csv'):
+            df = load_points_from_csv([path], return_type='df')
+        else:
+            df = load_points_from_txt([path], return_type='df')
     elif isinstance(df_or_paths, list):
-        frames = [read_thickness_txt(p) for p in df_or_paths]
-        df = pd.concat(frames, ignore_index=True)
+        # Assume all same type, check first file
+        if df_or_paths and df_or_paths[0].lower().endswith('.csv'):
+            df = load_points_from_csv(df_or_paths, return_type='df')
+        else:
+            df = load_points_from_txt(df_or_paths, return_type='df')
     else:
         df = df_or_paths.copy()
 
@@ -395,7 +575,7 @@ def extract_profile_table(df_or_paths, profile_id, *, order_method="pca"):
     if prof.empty:
         raise ValueError(f"No rows found for profile={profile_id}")
 
-    # Ensure required columns exist
+    # Ensure required columns exist (same logic as before)
     if 'zsurf' not in prof.columns and 'zbed' not in prof.columns and 'thickness' not in prof.columns:
         raise ValueError("Need at least zsurf+thickness or zbed to build a profile.")
 
