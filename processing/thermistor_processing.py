@@ -1,7 +1,11 @@
 import pandas as pd
 import numpy as np
 import re
+
+# for interpolation
 from scipy.ndimage import gaussian_filter1d # for smoothing
+from scipy.interpolate import Rbf
+from pykrige.ok import OrdinaryKriging
 
 # plotting
 import matplotlib.pyplot as plt
@@ -113,15 +117,71 @@ class ThermistorData:
 
         return df
 
-    def get_chain_data_with_offsets(self, start_time=None, end_time=None, offsets=None, snapshot_day=None):
+    def get_chain_data_with_offsets(self, start_time=None, end_time=None, offsets=None, snapshot_day=None, return_daily_average=False):
         """
         Returns chain data for the given time range or a single snapshot day with offsets applied.
         Uses apply_chain_offsets from thermistor_calibration.py.
         If snapshot_day is provided, start_time and end_time are ignored.
+        
+        Parameters:
+        -----------
+        start_time : str, optional
+            Start time for data filtering
+        end_time : str, optional  
+            End time for data filtering
+        offsets : dict or pd.Series, optional
+            Offsets to apply to temperature readings
+        snapshot_day : str, optional
+            If provided, filters for that day. Accepts formats like '20250819', '2025-08-19', '19.08.2025'.
+        return_daily_average : bool, default False
+            If True and snapshot_day is provided, returns daily averages for each thermistor.
+            If False, returns all data points for the snapshot day.
+        
+        Returns:
+        --------
+        pd.DataFrame with chain data. If return_daily_average=True and snapshot_day is provided,
+        returns single row with daily averages for each thermistor.
         """
         df = self.get_chain_data(start_time=start_time, end_time=end_time, snapshot_day=snapshot_day)
         if offsets is not None and not df.empty:
             df = apply_chain_offsets(df, offsets)
+        
+        # If snapshot_day is provided and daily average is requested, compute averages
+        if snapshot_day is not None and return_daily_average and not df.empty:
+            # Parse snapshot_day to get the date for the TIME column
+            day = None
+            try:
+                day = pd.to_datetime(snapshot_day, format='%d.%m.%Y', errors='coerce')
+            except Exception:
+                pass
+            if pd.isna(day):
+                try:
+                    day = pd.to_datetime(snapshot_day, format='%Y-%m-%d', errors='coerce')
+                except Exception:
+                    pass
+            if pd.isna(day):
+                try:
+                    day = pd.to_datetime(str(snapshot_day), format='%Y%m%d', errors='coerce')
+                except Exception:
+                    pass
+            if pd.isna(day):
+                raise ValueError(f"Could not parse snapshot_day: {snapshot_day}")
+            
+            day = day.normalize()
+            
+            # Calculate daily averages for all numeric columns
+            exclude_cols = ['NO', 'TIME']
+            numeric_cols = [col for col in df.columns if col not in exclude_cols and pd.api.types.is_numeric_dtype(df[col])]
+            
+            avg_data = {}
+            avg_data['NO'] = [1]  # Single measurement number
+            avg_data['TIME'] = [day + pd.Timedelta(hours=12)]  # Set to noon of that day
+            
+            for col in numeric_cols:
+                avg_data[col] = [df[col].mean()]
+            
+            return pd.DataFrame(avg_data)
+    
         return df
 
     def get_ntc_data(self):
@@ -140,6 +200,112 @@ class ThermistorData:
         # Replace -42.004 with NaN values
         df['Black Probe Temperature'] = df['Black Probe Temperature'].replace(-42.004, np.nan)
         df['White Probe Temperature'] = df['White Probe Temperature'].replace(-42.004, np.nan)
+
+        return df
+
+    def get_ntc_data_with_offsets(self, logger_id, offsets_df, snapshot_day=None, return_daily_average=False):
+        """
+        Get NTC data with offset correction applied.
+        
+        Parameters:
+        -----------
+        logger_id : int
+            Logger ID to look up offsets in the offsets_df.
+            
+        offsets_df : pd.DataFrame
+            DataFrame containing offsets with columns: Logger, Black Probe Offset, White Probe Offset
+            
+        snapshot_day : str, optional
+            If provided, filters for that day. Accepts formats like '20250819', '2025-08-19', '19.08.2025'.
+            If None, returns all data.
+            
+        return_daily_average : bool, default False
+            If True and snapshot_day is provided, returns daily averages for each probe.
+            If False, returns all data points for the snapshot day.
+        
+        Returns:
+        --------
+        pd.DataFrame with columns: ['Measurement', 'TIME', 'Black Probe Temperature', 'White Probe Temperature']
+        with offsets already applied (subtracted from measured temperatures).
+        If return_daily_average=True and snapshot_day is provided, returns single row with daily averages.
+        """
+        # Read the CSV file with the correct encoding and skip the first 5 rows
+        df = pd.read_csv(self.file_path, sep=self.delimiter, header=None, skiprows=5, 
+                    names=['Measurement', 'TIME', 'Black Probe Temperature', 'White Probe Temperature'], 
+                    encoding='latin1')
+        
+        # Convert the TIME column to datetime format
+        df['TIME'] = pd.to_datetime(df['TIME'])
+        
+        # Remove the special character (°C) from the temperature columns and convert to float
+        df['Black Probe Temperature'] = df['Black Probe Temperature'].apply(lambda x: re.sub(r'[^0-9.-]', '', str(x))).astype(float)
+        df['White Probe Temperature'] = df['White Probe Temperature'].apply(lambda x: re.sub(r'[^0-9.-]', '', str(x))).astype(float)
+        
+        # Replace -42.004 with NaN values
+        df['Black Probe Temperature'] = df['Black Probe Temperature'].replace(-42.004, np.nan)
+        df['White Probe Temperature'] = df['White Probe Temperature'].replace(-42.004, np.nan)
+
+        # Look up offsets in the provided DataFrame
+        logger_row = offsets_df[offsets_df['Logger'] == logger_id]
+        if len(logger_row) == 0:
+            print(f"Warning: Logger ID {logger_id} not found in offsets DataFrame")
+            black_offset = 0.0
+            white_offset = 0.0
+        else:
+            black_offset = float(logger_row['Black Probe Offset'].iloc[0])
+            white_offset = float(logger_row['White Probe Offset'].iloc[0])
+
+        # Apply offsets (subtract from measured temperatures)
+        df['Black Probe Temperature'] = df['Black Probe Temperature'] - black_offset
+        df['White Probe Temperature'] = df['White Probe Temperature'] - white_offset
+
+        # If snapshot_day is provided, filter for that day
+        if snapshot_day is not None:
+            # Parse snapshot_day with same logic as get_chain_data
+            day = None
+            try:
+                day = pd.to_datetime(snapshot_day, format='%d.%m.%Y', errors='coerce')
+            except Exception:
+                pass
+            if pd.isna(day):
+                try:
+                    day = pd.to_datetime(snapshot_day, format='%Y-%m-%d', errors='coerce')
+                except Exception:
+                    pass
+            if pd.isna(day):
+                try:
+                    day = pd.to_datetime(str(snapshot_day), format='%Y%m%d', errors='coerce')
+                except Exception:
+                    pass
+            if pd.isna(day):
+                raise ValueError(f"Could not parse snapshot_day: {snapshot_day}")
+            
+            day = day.normalize()
+            start_time = day
+            end_time = day + pd.Timedelta(days=1)
+            
+            # Filter by day
+            day_df = df[(df['TIME'] >= start_time) & (df['TIME'] < end_time)]
+            
+            if day_df.empty:
+                raise ValueError(f"No data found for day {snapshot_day}")
+            
+            # If return_daily_average is True, calculate daily averages
+            if return_daily_average:
+                # Calculate daily averages
+                avg_black = day_df['Black Probe Temperature'].mean()
+                avg_white = day_df['White Probe Temperature'].mean()
+                
+                # Return single-row DataFrame with daily averages (TIME set to noon)
+                return pd.DataFrame({
+                    'Measurement': [1],
+                    'TIME': [start_time + pd.Timedelta(hours=12)],
+                    'Black Probe Temperature': [avg_black],
+                    'White Probe Temperature': [avg_white]
+                })
+            else:
+                # Return all data points for the snapshot day
+                return day_df
 
         return df
 
@@ -714,161 +880,82 @@ def ntc_daily_snapshot(df, day_str):
 
 def read_thermistor_depths(depth_file):
     """
-    Reads a thermistor depth file and returns a dictionary mapping thermistor number (#1, #2, ...) to its current measurement depth (in meters).
-    Assumes the last column contains the current depth values.
+    Reads a thermistor depth file and returns a dictionary mapping thermistor identifier to its current measurement depth (in meters).
+    Handles two formats:
+    1. Standard format: #1, #2, #3, ... (returns as '#1', '#2', etc.)
+    2. Tynitag format: white probe, black probe (returns as 'white probe', 'black probe')
+    Always uses the last column that contains actual data (not empty).
+    Handles European decimal format (comma as decimal separator).
     """
     import pandas as pd
 
     # Read the file, skipping the header row
     df = pd.read_csv(depth_file, sep=';', header=0)
 
-    # Find the last column (current depth)
-    last_col = df.columns[-1]
+    # Find columns with "depth" in name that have actual data for thermistor rows
+    thermistor_mask = (
+        df[df.columns[0]].astype(str).str.startswith('#') |
+        df[df.columns[0]].astype(str).str.contains('probe', case=False, na=False)
+    )
+    
+    depth_col = None
+    for col in reversed(df.columns):
+        if 'depth' in str(col).lower() and col != df.columns[0]:
+            # Check if this column has actual numeric data for thermistor rows
+            test_data = df[thermistor_mask][col].dropna()
+            if len(test_data) > 0:
+                # Try converting one value to verify it's numeric
+                try:
+                    test_val = str(test_data.iloc[0]).strip().replace(',', '.')
+                    if test_val not in ['', 'nan', 'none']:
+                        float(test_val)
+                        depth_col = col
+                        break
+                except:
+                    continue
+    
+    # Fallback to last non-empty column if no depth column works
+    if depth_col is None:
+        for col in reversed(df.columns):
+            if not df[col].isna().all() and col != df.columns[0]:
+                test_data = df[thermistor_mask][col].dropna()
+                if len(test_data) > 0:
+                    try:
+                        test_val = str(test_data.iloc[0]).strip().replace(',', '.')
+                        if test_val not in ['', 'nan', 'none']:
+                            float(test_val)
+                            depth_col = col
+                            break
+                    except:
+                        continue
+    
+    if depth_col is None:
+        raise ValueError("No data column found with actual depth values")
+        
+    df_thermistors = df[thermistor_mask]
 
-    # Only keep rows that start with '#' (thermistor numbers)
-    df_thermistors = df[df[df.columns[0]].astype(str).str.startswith('#')]
-
-    # Build dictionary: {thermistor_number: depth}
+    # Build dictionary: {thermistor_identifier: depth}
     depths = {}
     for _, row in df_thermistors.iterrows():
-        thermistor_num = row[df.columns[0]]
+        thermistor_id = row[df.columns[0]]
         try:
-            depth = float(str(row[last_col]).replace(',', '.'))
-        except Exception:
+            depth_value = row[depth_col]
+            if pd.isna(depth_value):
+                print(f"Warning: NaN depth for {thermistor_id}")
+                depth = None
+            else:
+                depth_str = str(depth_value).strip().replace(',', '.')
+                if depth_str.lower() in ['nan', '', 'none']:
+                    print(f"Warning: Empty depth for {thermistor_id}")
+                    depth = None
+                else:
+                    depth = float(depth_str)
+        except (ValueError, TypeError) as e:
+            print(f"Warning: Could not convert depth for {thermistor_id}: '{row[depth_col]}' (Error: {e})")
             depth = None
-        depths[thermistor_num] = depth
+        depths[thermistor_id] = depth
 
     return depths
-
-def interpolate_temperature_stratified(
-    bh_locs, bh_surf, bh_depths_list, bh_temps_list,
-    d, z_s, z_b,
-    n_depth=200, n_elev=300
-):
-    """
-    Interpolates temperature in a stratified (depth-below-surface) manner along a profile.
-    Uses inverse distance weighting (IDW) for smooth horizontal interpolation.
-    Returns: grid_temp (n_elev, n_x), grid_elev (n_elev,)
-    """
-    import numpy as np
-
-    # 1. Build a uniform depth grid below surface (0 = surface)
-    max_depth = max([np.max(darr) for darr in bh_depths_list])
-    depth_grid = np.linspace(0.0, float(max_depth), n_depth)  # meters below local surface
-
-    # 2. Interpolate each borehole profile onto depth_grid (clamp outside to nearest sensor value)
-    bh_on_depth = []
-    for depths_arr, temps_arr in zip(bh_depths_list, bh_temps_list):
-        if depths_arr.size == 1:
-            vals = np.full_like(depth_grid, float(temps_arr[0]), dtype=float)
-        else:
-            vals = np.interp(depth_grid, depths_arr, temps_arr, left=temps_arr[0], right=temps_arr[-1])
-        bh_on_depth.append(vals)
-    bh_on_depth = np.vstack(bh_on_depth)  # shape (n_bh, n_depth)
-
-    # 3. Horizontally interpolate for each depth level across boreholes using IDW
-    grid_x = d
-    n_x = grid_x.size
-    grid_temp_depth_x = np.full((n_depth, n_x), np.nan, dtype=float)
-    for j, depth_val in enumerate(depth_grid):
-        t_bh = bh_on_depth[:, j]
-        # Inverse distance weighting (IDW)
-        for ix, x in enumerate(grid_x):
-            dists = np.abs(bh_locs - x)
-            # Avoid division by zero
-            dists[dists == 0] = 1e-6
-            weights = 1 / dists
-            weights /= weights.sum()
-            grid_temp_depth_x[j, ix] = np.sum(weights * t_bh)
-
-    # 4. Convert depth-grid -> global elevation grid for plotting:
-    elev_min = float(np.nanmin(z_b)) - 1.0
-    elev_max = float(np.nanmax(z_s)) + 1.0
-    grid_elev = np.linspace(elev_min, elev_max, n_elev)  # ascending bottom->top
-    grid_temp = np.full((n_elev, n_x), np.nan, dtype=float)
-
-    # 5. For each column, compute elevation positions of depth_grid and resample onto grid_elev
-    for i in range(n_x):
-        surf_i = float(np.interp(grid_x[i], d, z_s))
-        elev_at_depth = surf_i - depth_grid
-        order = np.argsort(elev_at_depth)
-        elev_sorted = elev_at_depth[order]
-        temp_sorted = grid_temp_depth_x[:, i][order]
-        col_vals = np.interp(grid_elev, elev_sorted, temp_sorted, left=np.nan, right=np.nan)
-        bed_i = float(np.interp(grid_x[i], d, z_b))
-        col_vals[grid_elev > surf_i] = np.nan
-        col_vals[grid_elev < bed_i] = np.nan
-        grid_temp[:, i] = col_vals
-        # Fill below deepest thermistor with its value (down to bed)
-        depths_arr = bh_depths_list[np.argmin(np.abs(bh_locs - grid_x[i]))]
-        temps_arr = bh_temps_list[np.argmin(np.abs(bh_locs - grid_x[i]))]
-        if len(depths_arr) > 0:
-            deepest_depth = np.max(depths_arr)
-            deepest_temp = temps_arr[np.argmax(depths_arr)]
-            deepest_elev = surf_i - deepest_depth
-            mask = (grid_elev < deepest_elev) & (grid_elev >= bed_i)
-            grid_temp[mask, i] = deepest_temp
-
-    # 6. Improved temperate layer: interpolate depth to 0°C isotherm and fill below with 0°C
-    temp_base_depths = []
-    for depths_arr, temps_arr in zip(bh_depths_list, bh_temps_list):
-        # Interpolate to find depth where T=0°C
-        if np.any(temps_arr == 0.0):
-            idx = np.where(temps_arr == 0.0)[0][0]
-            temp_base_depths.append(depths_arr[idx])
-        elif np.any(temps_arr > 0.0) and np.any(temps_arr < 0.0):
-            idx = np.where(temps_arr < 0.0)[0][-1]
-            d0, d1 = depths_arr[idx], depths_arr[idx+1]
-            t0, t1 = temps_arr[idx], temps_arr[idx+1]
-            d_zero = d0 + (0.0 - t0) * (d1 - d0) / (t1 - t0)
-            temp_base_depths.append(d_zero)
-        else:
-            temp_base_depths.append(np.max(depths_arr))  # fallback: deepest sensor
-    temp_base_depths = np.array(temp_base_depths)
-    temp_base_depths_interp = np.interp(grid_x, bh_locs, temp_base_depths)
-    # --- Add smoothing here ---
-    temp_base_depths_interp_smooth = gaussian_filter1d(temp_base_depths_interp, sigma=2)
-
-    transition_thickness = 2.0  # meters
-
-    for i in range(n_x):
-        surf_i = float(np.interp(grid_x[i], d, z_s))
-        bed_i = float(np.interp(grid_x[i], d, z_b))
-        temp_base_elev = surf_i - temp_base_depths_interp_smooth[i]
-        # Clamp the 0°C isotherm between bed and surface
-        temp_base_elev = np.clip(temp_base_elev, bed_i, surf_i)
-        for j, elev in enumerate(grid_elev):
-            # If below the 0°C isotherm, assign 0°C (temperate)
-            if bed_i <= elev < temp_base_elev:
-                grid_temp[j, i] = 0.0
-            # If within the transition zone, blend
-            elif temp_base_elev <= elev < temp_base_elev + transition_thickness and elev < surf_i:
-                alpha = (elev - temp_base_elev) / transition_thickness
-                grid_temp[j, i] = (1 - alpha) * 0.0 + alpha * grid_temp[j, i]
-            # If above the surface, keep as NaN (already set)
-
-    # 7. Fill fully-NaN columns with nearest borehole-derived column (prevents gaps)
-    for i in range(n_x):
-        if np.all(np.isnan(grid_temp[:, i])):
-            j_near = int(np.argmin(np.abs(bh_locs - grid_x[i])))
-            surf_bh = bh_surf[j_near]
-            elev_at_depth_bh = surf_bh - depth_grid
-            order = np.argsort(elev_at_depth_bh)
-            elev_sorted = elev_at_depth_bh[order]
-            temp_sorted = bh_on_depth[j_near, :][order]
-            col_vals = np.interp(grid_elev, elev_sorted, temp_sorted, left=np.nan, right=np.nan)
-            bed_i = float(np.interp(grid_x[i], d, z_b))
-            col_vals[grid_elev > np.interp(grid_x[i], d, z_s)] = np.nan
-            col_vals[grid_elev < bed_i] = np.nan
-            grid_temp[:, i] = col_vals
-
-    # 8. Clip to measured bounds (avoid artificial extremes)
-    measured_vals = np.hstack(bh_temps_list)
-    meas_min = float(np.nanmin(measured_vals))
-    meas_max = float(np.nanmax(measured_vals))
-    grid_temp = np.where(np.isfinite(grid_temp), np.clip(grid_temp, meas_min, meas_max), np.nan)
-
-    return grid_temp, grid_elev
 
 def interpolate_temperature_weighted_rbf(
     profile_distances,
@@ -953,3 +1040,352 @@ def interpolate_temperature_weighted_rbf(
                 grid_temp[j, i] = np.nan
 
     return grid_temp, grid_y
+
+def interpolate_temperature_rbf(
+    profile_df,
+    borehole_coords_df,
+    temp_data_dict,
+    depth_dict,
+    n_elev=200,
+    rbf_function='linear'
+):
+    """
+    Interpolate englacial temperature using RBF in (distance, elevation) space.
+    Returns: grid_temp (n_elev, n_x), grid_x (distance), grid_y (elevation)
+    """
+
+    d = profile_df['distance'].to_numpy()
+    z_s = profile_df['zsurf'].to_numpy()
+    z_b = profile_df['zbed'].to_numpy()
+
+    interp_points = []
+    interp_temps = []
+    for _, bh_row in borehole_coords_df.iterrows():
+        name = bh_row['name']
+        bh_x = float(str(bh_row['x']).replace(',', '.'))
+        bh_y = float(str(bh_row['y']).replace(',', '.'))
+        profile_xy = np.column_stack([profile_df['x'], profile_df['y']]) if 'x' in profile_df and 'y' in profile_df else None
+        if profile_xy is not None:
+            dists = np.sqrt((profile_xy[:,0] - bh_x)**2 + (profile_xy[:,1] - bh_y)**2)
+            profile_dist_idx = np.argmin(dists)
+            profile_dist = d[profile_dist_idx]
+            surface_elev = z_s[profile_dist_idx]
+        else:
+            profile_dist = bh_x
+            surface_elev = np.interp(profile_dist, d, z_s)
+
+        if name in temp_data_dict and name in depth_dict:
+            temps = temp_data_dict[name]
+            depths = depth_dict[name]
+            for probe, depth in depths.items():
+                if probe in temps:
+                    therm_elev = surface_elev - depth
+                    interp_points.append([profile_dist, therm_elev])
+                    interp_temps.append(temps[probe])
+
+    interp_points = np.array(interp_points)
+    interp_temps = np.array(interp_temps)
+    grid_x = d
+    grid_y = np.linspace(z_b.min(), z_s.max(), n_elev)
+    grid_xx, grid_yy = np.meshgrid(grid_x, grid_y)
+
+    rbf = Rbf(interp_points[:, 0], interp_points[:, 1], interp_temps, function=rbf_function)
+    grid_temp = rbf(grid_xx, grid_yy)
+
+    # Mask grid_temp outside glacier body
+    for i, x in enumerate(grid_x):
+        bed = np.interp(x, d, z_b)
+        surf = np.interp(x, d, z_s)
+        for j, y in enumerate(grid_y):
+            if not (bed < y < surf):
+                grid_temp[j, i] = np.nan
+
+    return grid_temp, grid_x, grid_y
+
+def interpolate_temperature_kriging(
+    profile_df,
+    borehole_coords_df,
+    temp_data_dict,
+    depth_dict,
+    n_elev=200,
+    variogram_model='linear'
+):
+    """
+    Interpolate englacial temperature using Ordinary Kriging in (distance, elevation) space.
+    Returns: grid_temp (n_elev, n_x), grid_x (distance), grid_y (elevation)
+    """
+    import numpy as np
+
+    d = profile_df['distance'].to_numpy()
+    z_s = profile_df['zsurf'].to_numpy()
+    z_b = profile_df['zbed'].to_numpy()
+
+    interp_points = []
+    interp_temps = []
+    for _, bh_row in borehole_coords_df.iterrows():
+        name = bh_row['name']
+        bh_x = float(str(bh_row['x']).replace(',', '.'))
+        bh_y = float(str(bh_row['y']).replace(',', '.'))
+        profile_xy = np.column_stack([profile_df['x'], profile_df['y']]) if 'x' in profile_df and 'y' in profile_df else None
+        if profile_xy is not None:
+            dists = np.sqrt((profile_xy[:,0] - bh_x)**2 + (profile_xy[:,1] - bh_y)**2)
+            profile_dist_idx = np.argmin(dists)
+            profile_dist = d[profile_dist_idx]
+            surface_elev = z_s[profile_dist_idx]
+        else:
+            profile_dist = bh_x
+            surface_elev = np.interp(profile_dist, d, z_s)
+
+        if name in temp_data_dict and name in depth_dict:
+            temps = temp_data_dict[name]
+            depths = depth_dict[name]
+            for probe, depth in depths.items():
+                if probe in temps:
+                    therm_elev = surface_elev - depth
+                    interp_points.append([profile_dist, therm_elev])
+                    interp_temps.append(temps[probe])
+
+    interp_points = np.array(interp_points)
+    interp_temps = np.array(interp_temps)
+    grid_x = d
+    grid_y = np.linspace(z_b.min(), z_s.max(), n_elev)
+    grid_xx, grid_yy = np.meshgrid(grid_x, grid_y)
+
+    # Kriging interpolation
+    OK = OrdinaryKriging(
+        interp_points[:, 0], interp_points[:, 1], interp_temps,
+        variogram_model=variogram_model, verbose=False, enable_plotting=False
+    )
+    grid_temp, _ = OK.execute('grid', grid_x, grid_y)
+
+    # Mask grid_temp outside glacier body
+    for i, x in enumerate(grid_x):
+        bed = np.interp(x, d, z_b)
+        surf = np.interp(x, d, z_s)
+        for j, y in enumerate(grid_y):
+            if not (bed < y < surf):
+                grid_temp[j, i] = np.nan
+
+    return grid_temp, grid_x, grid_y
+
+def interpolate_glacier_temperature_field_2d(
+    profile_df,
+    borehole_coords_df, 
+    temp_data_dict,
+    depth_dict,
+    n_depth=200,
+    n_elev=300,
+    depth_weight=2.5,  # Weight depth more heavily than horizontal distance
+    rbf_function='multiquadric'  # RBF function type
+):
+    """
+    Interpolates glacier temperature field using 2D RBF interpolation
+    that respects both horizontal and vertical temperature gradients.
+    """
+    import numpy as np
+    from scipy.interpolate import Rbf
+    
+    # Get profile geometry
+    d = profile_df['distance'].to_numpy()
+    z_s = profile_df['zsurf'].to_numpy() 
+    z_b = profile_df['zbed'].to_numpy()
+    
+    # Collect all measurement points in 2D: (distance, elevation, temperature)
+    points_2d = []
+    temps_2d = []
+    
+    for _, bh_row in borehole_coords_df.iterrows():
+        name = bh_row['name']
+        bh_x = float(str(bh_row['x']).replace(',', '.'))
+        bh_y = float(str(bh_row['y']).replace(',', '.'))
+        
+        # Find borehole position along profile
+        if 'x' in profile_df and 'y' in profile_df:
+            profile_xy = np.column_stack([profile_df['x'], profile_df['y']])
+            dists = np.sqrt((profile_xy[:,0] - bh_x)**2 + (profile_xy[:,1] - bh_y)**2)
+            idx = np.argmin(dists)
+            bh_distance = d[idx]
+            surf_elev = z_s[idx]
+        else:
+            bh_distance = bh_x
+            surf_elev = np.interp(bh_distance, d, z_s)
+        
+        if name in temp_data_dict and name in depth_dict:
+            temps = temp_data_dict[name]
+            depths = depth_dict[name]
+            
+            for probe, depth in depths.items():
+                if probe in temps and np.isfinite(temps[probe]):
+                    elev = surf_elev - depth
+                    # Store as (distance, weighted_elevation)
+                    points_2d.append([bh_distance, elev * depth_weight])
+                    temps_2d.append(temps[probe])
+    
+    if len(points_2d) < 3:
+        raise ValueError("Need at least 3 temperature measurements for 2D interpolation")
+    
+    points_2d = np.array(points_2d)
+    temps_2d = np.array(temps_2d)
+    
+    # Create regular elevation grid
+    elev_min = float(np.nanmin(z_b)) - 1.0
+    elev_max = float(np.nanmax(z_s)) + 1.0
+    elev_grid = np.linspace(elev_min, elev_max, n_elev)
+    
+    # Create grid points for interpolation
+    profile_x = d
+    grid_xx, grid_yy = np.meshgrid(profile_x, elev_grid)
+    
+    # RBF interpolation
+    rbf = Rbf(
+        points_2d[:, 0], points_2d[:, 1], temps_2d, 
+        function=rbf_function,  # 'linear', 'cubic', 'quintic', 'thin_plate', 'multiquadric', 'inverse'
+        smooth=0.1  # Add some smoothing to avoid overfitting
+    )
+    
+    # Interpolate on the grid (with weighted elevation)
+    grid_temp_elev = rbf(grid_xx, grid_yy * depth_weight)
+    
+    # Mask outside glacier body
+    for i, x in enumerate(profile_x):
+        surf_at_x = float(np.interp(x, d, z_s))
+        bed_at_x = float(np.interp(x, d, z_b))
+        above = elev_grid > surf_at_x
+        below = elev_grid < bed_at_x
+        grid_temp_elev[above, i] = np.nan
+        grid_temp_elev[below, i] = np.nan
+    
+    return grid_temp_elev, elev_grid, profile_x
+
+def interpolate_borehole_profile_1d(depths, temps, depth_grid):
+    """
+    Interpolate a borehole temperature profile onto a regular depth grid,
+    filling all gaps between thermistor positions.
+    - depths: array-like, depths of sensors (in meters, positive downward)
+    - temps: array-like, temperatures at those depths (same length as depths)
+    - depth_grid: array-like, depths at which to interpolate (must cover the range of depths)
+    
+    Returns: interp_temps (np.ndarray), interpolated temperatures at depth_grid
+    """
+    import numpy as np
+
+    depths = np.asarray(depths, dtype=float)
+    temps = np.asarray(temps, dtype=float)
+    depth_grid = np.asarray(depth_grid, dtype=float)
+
+    # Sort by depth in case input is unordered
+    order = np.argsort(depths)
+    depths = depths[order]
+    temps = temps[order]
+
+    # Fill all gaps by linear interpolation, clamp outside to nearest measured value
+    interp_temps = np.interp(depth_grid, depths, temps, left=temps[0], right=temps[-1])
+    return interp_temps
+
+def interpolate_between_boreholes_stratified(profile_x, bh_x, bh_temp_profiles, method='idw'):
+    """
+    Interpolate horizontally between several 1D-interpolated borehole temperature profiles
+    at each depth (stratified interpolation).
+
+    Parameters
+    ----------
+    profile_x : 1D array-like
+        Distances along the profile where interpolation is desired (e.g., profile grid).
+    bh_x : 1D array-like
+        Distances along the profile of each borehole (same order as bh_temp_profiles).
+    bh_temp_profiles : 2D array-like, shape (n_boreholes, n_depth)
+        Each row is the interpolated temperature profile for a borehole (on the same depth grid).
+    method : str, default 'idw'
+        Interpolation method. Only 'idw' (inverse distance weighting) is implemented.
+
+    Returns
+    -------
+    grid_temp : 2D np.ndarray, shape (n_depth, len(profile_x))
+        Interpolated temperature at each (profile_x, depth).
+    """
+    import numpy as np
+
+    bh_x = np.asarray(bh_x)
+    bh_temp_profiles = np.asarray(bh_temp_profiles)
+    n_bh, n_depth = bh_temp_profiles.shape
+    n_x = len(profile_x)
+    grid_temp = np.full((n_depth, n_x), np.nan)
+
+    for j in range(n_depth):
+        vals = bh_temp_profiles[:, j]
+        for i, x in enumerate(profile_x):
+            dists = np.abs(bh_x - x)
+            dists[dists == 0] = 1e-6  # avoid division by zero
+            weights = 1 / dists
+            weights /= weights.sum()
+            grid_temp[j, i] = np.sum(weights * vals)
+    return grid_temp
+
+def create_temp_depth_dicts(thermistor_data_dict, depth_data_dict):
+    """
+    Create temperature and depth dictionaries from thermistor data objects and depth data.
+    
+    Parameters:
+    -----------
+    thermistor_data_dict : dict
+        Dictionary with borehole names as keys and thermistor data DataFrames as values.
+        e.g., {'CH1G': CH1G_data, 'CH2G': CH2G_data, 'CH5TT': CH5TT_data}
+        
+    depth_data_dict : dict
+        Dictionary with borehole names as keys and depth dictionaries as values.
+        e.g., {'CH1G': CH1G_depths, 'CH2G': CH2G_depths, 'CH5TT': CH5TT_depths}
+    
+    Returns:
+    --------
+    tuple: (temp_data_dict, depth_dict)
+        - temp_data_dict: Dictionary with borehole names as keys and pd.Series of temperatures as values
+        - depth_dict: Dictionary with borehole names as keys and depth dictionaries as values
+    """
+    temp_data_dict = {}
+    depth_dict = {}
+    
+    for borehole, data in thermistor_data_dict.items():
+        if data is None or data.empty:
+            print(f"Warning: No data for {borehole}, skipping...")
+            continue
+            
+        # Get corresponding depth data
+        depths = depth_data_dict.get(borehole, {})
+        if not depths:
+            print(f"Warning: No depth data for {borehole}, skipping...")
+            continue
+            
+        # Check if it's GeoPrecision chain data (has columns starting with '#')
+        chain_columns = [col for col in data.columns if col.startswith('#')]
+        
+        if chain_columns:
+            # GeoPrecision chain data
+            temps = {}
+            for col in chain_columns:
+                if col in depths and depths[col] is not None:
+                    temps[col] = data[col].iloc[0]  # Get the single daily average value
+            temp_data_dict[borehole] = pd.Series(temps)
+            
+        elif 'White Probe Temperature' in data.columns and 'Black Probe Temperature' in data.columns:
+            # Tynitag NTC data
+            white_temp = data['White Probe Temperature'].iloc[0]
+            black_temp = data['Black Probe Temperature'].iloc[0]
+            
+            temp_data_dict[borehole] = pd.Series({
+                'white probe': white_temp,
+                'black probe': black_temp
+            })
+        else:
+            print(f"Warning: Unknown data format for {borehole}, skipping...")
+            continue
+            
+        # Store depth data (only for boreholes with valid temperature data)
+        depth_dict[borehole] = depths
+        
+        # Print summary
+        print(f"{borehole}: {len(temp_data_dict[borehole])} thermistors")
+        for sensor, temp in temp_data_dict[borehole].items():
+            depth = depths.get(sensor, 'N/A')
+            print(f"  {sensor}: {temp:.3f}°C at {depth} m")
+    
+    return temp_data_dict, depth_dict
