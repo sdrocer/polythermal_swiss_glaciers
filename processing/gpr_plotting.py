@@ -7,6 +7,7 @@ import rasterio
 from rasterio.merge import merge as rio_merge
 from matplotlib.colors import ListedColormap, BoundaryNorm
 from matplotlib.ticker import MultipleLocator, FuncFormatter
+from matplotlib.lines import Line2D
 from scipy.interpolate import Rbf
 from processing.thermistor_processing import *
 
@@ -153,6 +154,18 @@ def icetemp_cmap(n=256, red_fraction=0.08):
     # Stack: blue for <0, red for >=0
     colors = np.vstack([blue, red])
     return ListedColormap(colors, name="icetemp")
+
+def discrete_icetemp_cmap(levels):
+    """
+    Discretize the icetemp_cmap so that all intervals except the highest use the blue spectrum of cmc.vik,
+    and only the highest interval (last) uses the red color.
+    """
+    n = len(levels) - 1
+    # Blue spectrum: left half of cmc.vik
+    blue_colors = cmc.vik(np.linspace(0, 0.5, n-1)) if n > 1 else np.empty((0, 4))
+    red_color = np.array(cmc.vik(1.0)).reshape(1, -1)
+    colors = np.vstack([blue_colors, red_color])
+    return ListedColormap(colors, name="icetemp_discrete")
 
 def plot_dem_contours(
     ax,
@@ -497,17 +510,31 @@ def cairomakie_cmap(name: str = "Blues", n: int = 256, reverse: bool = False) ->
         return base.reversed() if reverse else base
 
 def plot_thickness_profile(profile_df: pd.DataFrame, *, ax=None, title=None,
-                           flip='auto',                      # NEW
+                           flip='auto',                      
                            facecolor="#7db7d8", edgecolor="k", alpha=0.85,
-                           surface_kwargs=None, bed_kwargs=None):
+                           surface_kwargs=None, bed_kwargs=None,
+                           break_threshold=50.0,
+                           smooth_sigma=2.0):  # NEW: smoothing parameter
     """
     Plot a 2D glacier cross-section (distance vs elevation).
-    flip:
-      - 'auto' -> reverse so surface increases from left to right
-      - True   -> always reverse
-      - False  -> as-is
+    Detects and visualizes breaks in the profile where there are gaps in data.
+    Creates proper visual cuts so lines don't connect across breaks.
+    
+    Args:
+        break_threshold: Distance threshold (in meters) to detect profile breaks
+        smooth_sigma: Gaussian smoothing sigma for surface/bed lines (0 = no smoothing)
+        flip: 'auto' -> reverse so surface increases from left to right
+              True   -> always reverse
+              False  -> as-is
     """
     import matplotlib.pyplot as plt
+    from scipy import ndimage
+
+    def smooth_line(x, y, sigma):
+        """Apply Gaussian smoothing to y values, preserving x spacing"""
+        if sigma <= 0 or len(y) < 3:
+            return y
+        return ndimage.gaussian_filter1d(y, sigma=sigma, mode='nearest')
 
     ax = ax or plt.subplots(figsize=(10,5), dpi=150)[1]
     d0 = profile_df['distance'].to_numpy()
@@ -522,14 +549,67 @@ def plot_thickness_profile(profile_df: pd.DataFrame, *, ax=None, title=None,
     elif flip is True:
         z_s = z_s[::-1]; z_b = z_b[::-1]; d = d0.max() - d0[::-1]
 
-    # Fill glacier body
-    ax.fill_between(d, z_b, z_s, color=facecolor, alpha=alpha, linewidth=0)
-
-    # Lines
+    # Detect breaks in the profile
+    dist_diffs = np.diff(d)
+    break_indices = np.where(dist_diffs > break_threshold)[0]
+    
+    # Split into continuous segments
+    segments = []
+    start_idx = 0
+    
+    if len(break_indices) == 0:
+        # No breaks - single segment
+        segments.append((0, len(d)))
+    else:
+        # Multiple segments separated by breaks
+        print(f"Profile has {len(break_indices)} break(s) at distances: {d[break_indices + 1]}")
+        
+        for break_idx in break_indices:
+            end_idx = break_idx + 1
+            segments.append((start_idx, end_idx))
+            start_idx = end_idx
+        segments.append((start_idx, len(d)))  # Last segment
+    
+    # Plot each segment separately (this ensures no connections across breaks)
     surface_kwargs = {'color': 'k', 'linewidth': 1.5} | (surface_kwargs or {})
     bed_kwargs     = {'color': 'k', 'linewidth': 1.5, 'linestyle': ':'} | (bed_kwargs or {})
-    ax.plot(d, z_s, **surface_kwargs, label='Surface')
-    ax.plot(d, z_b, **bed_kwargs,     label='Bed')
+    
+    for i, (start, end) in enumerate(segments):
+        if start >= end:
+            continue
+            
+        # Extract segment data
+        d_seg = d[start:end]
+        z_s_seg = z_s[start:end]
+        z_b_seg = z_b[start:end]
+        
+        # Skip segments that are too small
+        if len(d_seg) < 2:
+            continue
+        
+        # Apply smoothing to each segment
+        z_s_seg_smooth = smooth_line(d_seg, z_s_seg, smooth_sigma)
+        z_b_seg_smooth = smooth_line(d_seg, z_b_seg, smooth_sigma)
+        
+        # Fill glacier body for this segment (use smoothed data)
+        ax.fill_between(d_seg, z_b_seg_smooth, z_s_seg_smooth, color=facecolor, alpha=alpha, linewidth=0)
+        
+        # Plot lines (only add labels for first segment to avoid duplicate legend entries)
+        label_surface = 'Surface' if i == 0 else None
+        label_bed = 'Bed' if i == 0 else None
+        
+        ax.plot(d_seg, z_s_seg_smooth, **surface_kwargs, label=label_surface)
+        ax.plot(d_seg, z_b_seg_smooth, **bed_kwargs, label=label_bed)
+    
+    # Mark the breaks with vertical dashed lines (optional visual indicator)
+    if len(break_indices) > 0:
+        y_min = min(np.min(z_b), np.min(z_s)) - 5
+        y_max = max(np.max(z_b), np.max(z_s)) + 5
+        
+        for i, break_idx in enumerate(break_indices):
+            break_distance = d[break_idx + 1]
+            ax.axvline(break_distance, color='red', linestyle='--', linewidth=1.0, 
+                      alpha=0.5, label='Profile break' if i == 0 else None)
 
     ax.set_xlabel("Distance [m]")
     ax.set_ylabel("Elevation [m]")
@@ -543,597 +623,239 @@ def plot_thickness_profile(profile_df: pd.DataFrame, *, ax=None, title=None,
     format_plot(ax=ax, title=title, x_tick_rotation=0, legend_loc='upper left', adjust_linewidths=False)
     return fig, ax
 
-# def plot_icetemp_profile(
-#     profile_df, borehole_coords_df, temp_data_dict, depth_dict, ax=None, title=None,
-#     cmap=None, vmin=None, vmax=None, flip='auto', depth_weight=3.0, n_elev=200
-# ):
-#     """
-#     Plots glacier cross-section with borehole positions and interpolated temperature heatmap.
-#     Uses weighted RBF interpolation in (distance, elevation) space.
-#     """
-#     ax = ax or plt.subplots(figsize=(10,5), dpi=150)[1]
-#     d0 = profile_df['distance'].to_numpy()
-#     z_s = profile_df['zsurf'].to_numpy()
-#     z_b = profile_df['zbed'].to_numpy()
-
-#     # Flip so it starts low and goes up (left->right)
-#     d = d0
-#     if flip == 'auto':
-#         if z_s[-1] < z_s[0]:
-#             z_s = z_s[::-1]; z_b = z_b[::-1]; d = d0.max() - d0[::-1]
-#     elif flip is True:
-#         z_s = z_s[::-1]; z_b = z_b[::-1]; d = d0.max() - d0[::-1]
-
-#     # Plot surface and bed
-#     ax.plot(d, z_s, color='k', linewidth=1.5, label='Surface')
-#     ax.plot(d, z_b, color='k', linewidth=1.5, linestyle='--', label='Bed')
-
-#     # Plot borehole lines and sensors (unchanged)
-#     for _, bh_row in borehole_coords_df.iterrows():
-#         name = bh_row['name']
-#         bh_x = float(str(bh_row['x']).replace(',', '.'))
-#         bh_y = float(str(bh_row['y']).replace(',', '.'))
-#         profile_xy = np.column_stack([profile_df['x'], profile_df['y']]) if 'x' in profile_df and 'y' in profile_df else None
-#         if profile_xy is not None:
-#             dists = np.sqrt((profile_xy[:,0] - bh_x)**2 + (profile_xy[:,1] - bh_y)**2)
-#             profile_dist_idx = np.argmin(dists)
-#             profile_dist = d[profile_dist_idx]
-#             surface_elev = z_s[profile_dist_idx]
-#         else:
-#             profile_dist = bh_x  # fallback
-#             surface_elev = np.interp(profile_dist, d, z_s)
-
-#         if name in temp_data_dict and name in depth_dict:
-#             temps = temp_data_dict[name]
-#             depths = depth_dict[name]
-#             for probe, depth in depths.items():
-#                 if probe in temps:
-#                     therm_elev = surface_elev - depth
-#                     ax.plot(profile_dist, therm_elev, marker='o', color='k', markersize=4, zorder=11)
-#             min_elev = surface_elev - max(depths.values())
-#             max_elev = surface_elev
-#             ax.plot(
-#                 [profile_dist, profile_dist],
-#                 [min_elev, max_elev],
-#                 color='k', linestyle='solid', alpha=1, zorder=5, linewidth=1.5
-#             )
-#             ax.text(profile_dist, surface_elev+6, name, color='red', fontsize=10, va='bottom', ha='center', zorder=12)
-
-#     # --- Use the new weighted RBF interpolation ---
-#     from processing.thermistor_processing import interpolate_temperature_weighted_rbf
-#     grid_temp, grid_y = interpolate_temperature_weighted_rbf(
-#         profile_distances=d,
-#         z_surf=z_s,
-#         z_bed=z_b,
-#         borehole_coords_df=borehole_coords_df,
-#         temp_data_dict=temp_data_dict,
-#         depth_dict=depth_dict,
-#         n_elev=n_elev,
-#         depth_weight=depth_weight,
-#         rbf_function='linear'
-#     )
-
-#     # measured bounds for clipping / color scaling
-#     measured_vals = []
-#     for name in temp_data_dict:
-#         measured_vals.extend(list(temp_data_dict[name].values))
-#     meas_min = float(np.nanmin(measured_vals))
-#     meas_max = float(np.nanmax(measured_vals))
-
-#     # Colormap: blue->...->red (preserve previous stylistic choice)
-#     base = cmc.vik(np.linspace(0, 0.6, 128))
-#     red = np.array(cmc.vik(1.0)).reshape(1, -1)
-#     colors = np.vstack([base, red])
-#     cmap_use = ListedColormap(colors) if cmap is None else cmap
-
-#     im = ax.imshow(
-#         grid_temp,
-#         extent=[d.min(), d.max(), grid_y.min(), grid_y.max()],
-#         origin='lower',
-#         aspect='auto',
-#         cmap=cmap_use,
-#         vmin=meas_min if vmin is None else vmin,
-#         vmax=meas_max if vmax is None else vmax,
-#         alpha=0.85,
-#         zorder=0
-#     )
-
-#     # Colorbar
-#     cb = plt.colorbar(im, ax=ax, label='Ice Temperature [°C]')
-#     n_ticks = 6
-#     tick_values = np.linspace(meas_min, meas_max, n_ticks)
-#     cb.set_ticks(tick_values)
-#     cb.set_ticklabels([f"{v:.2f}" for v in tick_values])
-
-#     ax.set_ylim(np.min(z_b) - 2, np.max(z_s) + 2)
-#     ax.set_xlabel("Distance [m]")
-#     ax.set_ylabel("Elevation [m]")
-#     if title:
-#         ax.set_title(title)
-#     ax.grid(True, alpha=0.3)
-#     ax.legend(loc='best', frameon=True)
-#     format_plot(ax=ax, title=title, x_tick_rotation=0, legend_loc='upper left', adjust_linewidths=False)
-#     plt.tight_layout()
-#     return ax.figure, ax
-
-def plot_icetemp_profile(profile_df, borehole_coords_df, temp_data_dict, depth_dict, ax=None, title=None,
-                                   cmap=icetemp_cmap(), vmin=None, vmax=None, flip='auto'):
+def plot_icetemp_profile(
+    profile_df,
+    borehole_coords_df,
+    temp_data_dict,
+    depth_dict,
+    ax=None,
+    title=None,
+    cmap=None,
+    vmin=None,
+    vmax=None,
+    flip='auto',
+    n_depth=500,
+    n_elev=600,
+    plot_contours=True,
+    break_threshold=50.0  # NEW: threshold to detect profile breaks
+):
     """
     Plots glacier cross-section with borehole positions and interpolated temperature heatmap.
-    - profile_df: DataFrame with 'distance', 'zsurf', 'zbed'
-    - borehole_coords_df: DataFrame with borehole coordinates ('name', 'x', 'y', ...)
-    - temp_data_dict: dict {borehole_name: pandas.Series of temperatures}
-    - depth_dict: dict {borehole_name: {probe: depth}}
-    - flip: 'auto' | True | False (reverse so surface increases left to right)
+    Handles discontinuous profiles by splitting into segments.
     """
-    from scipy.interpolate import griddata
+    import numpy as np
+    import matplotlib.pyplot as plt
+    from matplotlib.colors import BoundaryNorm
+    from matplotlib.lines import Line2D
 
+    # --- Prepare profile arrays ---
     ax = ax or plt.subplots(figsize=(10,5), dpi=150)[1]
     d0 = profile_df['distance'].to_numpy()
     z_s = profile_df['zsurf'].to_numpy()
     z_b = profile_df['zbed'].to_numpy()
 
-    # Flip so it starts low and goes up (left->right)
+    # Flip logic
     d = d0
+    profile_df_plot = profile_df.copy()
     if flip == 'auto':
         if z_s[-1] < z_s[0]:
             z_s = z_s[::-1]; z_b = z_b[::-1]; d = d0.max() - d0[::-1]
-    elif flip is True:
+            profile_df_plot = profile_df.iloc[::-1].copy()
+            profile_df_plot['distance'] = d
+            profile_df_plot['zsurf'] = z_s
+            profile_df_plot['zbed'] = z_b
+    elif flip is True or flip == 'true':
         z_s = z_s[::-1]; z_b = z_b[::-1]; d = d0.max() - d0[::-1]
+        profile_df_plot = profile_df.iloc[::-1].copy()
+        profile_df_plot['distance'] = d
+        profile_df_plot['zsurf'] = z_s
+        profile_df_plot['zbed'] = z_b
 
-    # Plot surface and bed
-    ax.plot(d, z_s, color='k', linewidth=1.5, label='Surface')
-    ax.plot(d, z_b, color='k', linewidth=1.5, linestyle='--', label='Bed')
+    # --- Detect breaks in the profile (same logic as plot_thickness_profile) ---
+    dist_diffs = np.diff(d)
+    break_indices = np.where(dist_diffs > break_threshold)[0]
+    
+    # Split into continuous segments
+    segments = []
+    start_idx = 0
+    
+    if len(break_indices) == 0:
+        # No breaks - single segment
+        segments.append((0, len(d)))
+    else:
+        # Multiple segments separated by breaks
+        print(f"Profile has {len(break_indices)} break(s) at distances: {d[break_indices + 1]}")
+        
+        for break_idx in break_indices:
+            end_idx = break_idx + 1
+            segments.append((start_idx, end_idx))
+            start_idx = end_idx
+        segments.append((start_idx, len(d)))  # Last segment
 
-    # Collect borehole positions and sensor depths/temps for interpolation
-    interp_points = []
-    interp_temps = []
+    # --- Plot each segment separately ---
+    for seg_i, (start, end) in enumerate(segments):
+        if start >= end or end - start < 2:
+            continue
+            
+        # Extract segment data
+        d_seg = d[start:end]
+        z_s_seg = z_s[start:end]
+        z_b_seg = z_b[start:end]
+        
+        # Create segment profile DataFrame
+        profile_seg = profile_df_plot.iloc[start:end].copy()
+        
+        # --- Generate temperature field for this segment only ---
+        try:
+            grid_temp_elev_seg, elev_grid_seg, profile_x_seg = interpolate_glacier_temperature_field_2d(
+                profile_seg,
+                borehole_coords_df,
+                temp_data_dict,
+                depth_dict,
+                n_depth=n_depth,
+                n_elev=n_elev
+            )
+            
+            # --- CREATE GLACIER MASK for this segment ---
+            grid_xx_seg, grid_yy_seg = np.meshgrid(profile_x_seg, elev_grid_seg)
+            
+            # Interpolate surface and bed elevations to the grid x-coordinates
+            surface_interp_seg = np.interp(profile_x_seg, d_seg, z_s_seg)
+            bed_interp_seg = np.interp(profile_x_seg, d_seg, z_b_seg)
+            
+            # Create mask: True where we're inside the glacier
+            glacier_mask_seg = np.zeros_like(grid_temp_elev_seg, dtype=bool)
+            for i, x in enumerate(profile_x_seg):
+                surf_elev = surface_interp_seg[i]
+                bed_elev = bed_interp_seg[i]
+                mask_col = (elev_grid_seg >= bed_elev) & (elev_grid_seg <= surf_elev)
+                glacier_mask_seg[:, i] = mask_col
+            
+            # Apply mask to temperature grid
+            grid_temp_masked_seg = np.ma.masked_where(~glacier_mask_seg, grid_temp_elev_seg)
+            
+            # Store segment data for plotting
+            if seg_i == 0:
+                # Initialize with first segment
+                all_segments_data = [{
+                    'grid_temp': grid_temp_masked_seg,
+                    'grid_xx': grid_xx_seg,
+                    'grid_yy': grid_yy_seg,
+                    'profile_x': profile_x_seg,
+                    'elev_grid': elev_grid_seg
+                }]
+            else:
+                # Add additional segments
+                all_segments_data.append({
+                    'grid_temp': grid_temp_masked_seg,
+                    'grid_xx': grid_xx_seg,
+                    'grid_yy': grid_yy_seg,
+                    'profile_x': profile_x_seg,
+                    'elev_grid': elev_grid_seg
+                })
+                
+        except Exception as e:
+            print(f"Warning: Could not interpolate temperature for segment {seg_i}: {e}")
+            continue
+
+        # --- Plot surface and bed for this segment ---
+        label_surface = 'Surface' if seg_i == 0 else None
+        label_bed = 'Bed' if seg_i == 0 else None
+        
+        ax.plot(d_seg, z_s_seg, color='k', linewidth=1.5, label=label_surface, zorder=10)
+        ax.plot(d_seg, z_b_seg, color='k', linewidth=1.5, linestyle='--', label=label_bed, zorder=10)
+
+    # --- Mark breaks with vertical lines ---
+    if len(break_indices) > 0:
+        y_min = min(np.min(z_b), np.min(z_s)) - 5
+        y_max = max(np.max(z_b), np.max(z_s)) + 5
+        
+        for i, break_idx in enumerate(break_indices):
+            break_distance = d[break_idx + 1]
+            ax.axvline(break_distance, color='red', linestyle='--', linewidth=1.0, 
+                      alpha=0.5, label='Profile break' if i == 0 else None, zorder=5)
+
+    # --- Plot borehole lines and sensors ---
     for _, bh_row in borehole_coords_df.iterrows():
         name = bh_row['name']
         bh_x = float(str(bh_row['x']).replace(',', '.'))
         bh_y = float(str(bh_row['y']).replace(',', '.'))
-        profile_xy = np.column_stack([profile_df['x'], profile_df['y']]) if 'x' in profile_df and 'y' in profile_df else None
+        profile_xy = np.column_stack([profile_df_plot['x'], profile_df_plot['y']]) if 'x' in profile_df_plot and 'y' in profile_df_plot else None
         if profile_xy is not None:
             dists = np.sqrt((profile_xy[:,0] - bh_x)**2 + (profile_xy[:,1] - bh_y)**2)
-            profile_dist_idx = np.argmin(dists)
-            profile_dist = d[profile_dist_idx]
-            surface_elev = z_s[profile_dist_idx]
-        else:
-            profile_dist = bh_x  # fallback
-            surface_elev = np.interp(profile_dist, d, z_s)
-
-        # For each sensor in borehole
-        if name in temp_data_dict and name in depth_dict:
-            temps = temp_data_dict[name]
-            depths = depth_dict[name]
-            # Plot each thermistor as a small horizontal line at its elevation
-            for probe, depth in depths.items():
-                if probe in temps:
-                    therm_elev = surface_elev - depth
-                    interp_points.append([profile_dist, therm_elev])
-                    interp_temps.append(temps[probe])
-                    # Draw a small horizontal line ("-") for the thermistor
-                    # ax.plot([profile_dist-1.2, profile_dist+1.2], [therm_elev, therm_elev], color='black', linewidth=1.2, zorder=10)
-                    # Draw a small circle at the thermistor position
-                    ax.plot(profile_dist, therm_elev, marker='o', color='k', markersize=4, zorder=11)
-            # Draw vertical line for borehole (from shallowest to deepest thermistor)
-            min_elev = surface_elev - max(depths.values())
-            max_elev = surface_elev # shallowest thermistor at the glacier surface
-            # Draw vertical line for borehole (from surface to bed only)
-            ax.plot(
-                [profile_dist, profile_dist],
-                [min_elev, max_elev],
-                color='k', linestyle='solid', alpha=1, zorder=5, linewidth=1.5
-            )
-            # Annotate borehole name above glacier surface
-            ax.text(profile_dist, surface_elev+6, name, color='red', fontsize=10, va='bottom', ha='center', zorder=12)
-
-    # Interpolate temperature heatmap
-    interp_points = np.array(interp_points)
-    interp_temps = np.array(interp_temps)
-    # Create grid for heatmap
-    grid_x = d
-    grid_y = np.linspace(z_b.min(), z_s.max(), 200)
-    grid_xx, grid_yy = np.meshgrid(grid_x, grid_y)
-
-    # Interpolate temperature heatmap using RBF
-    interp_points = np.array(interp_points)
-    interp_temps = np.array(interp_temps)
-    grid_x = d
-    grid_y = np.linspace(z_b.min(), z_s.max(), 200)
-    grid_xx, grid_yy = np.meshgrid(grid_x, grid_y)
-
-    # Use RBF for smooth interpolation and extrapolation
-    rbf = Rbf(interp_points[:, 0], interp_points[:, 1], interp_temps, function='linear')  # or 'multiquadric', 'thin_plate', etc.
-    grid_temp = rbf(grid_xx, grid_yy)
-
-    # Mask grid_temp outside glacier body
-    for i, x in enumerate(grid_x):
-        bed = np.interp(x, d, z_b)
-        surf = np.interp(x, d, z_s)
-        for j, y in enumerate(grid_y):
-            if not (bed < y < surf):
-                grid_temp[j, i] = np.nan
-
-    # Set all values >= 0 to exactly 0 (so they all map to the top of the blue colormap)
-    grid_temp_masked = np.copy(grid_temp)
-    grid_temp_masked[grid_temp_masked >= -0.2] = 0
-
-    # Truncate the icetemp_cmap to only the blue part (e.g., left 60% of vik)
-    base = cmc.vik(np.linspace(0, 0.6, 128))
-    # Add a single red color for 0°C
-    red = np.array(cmc.vik(1.0)).reshape(1, -1)
-    colors = np.vstack([base, red])
-    cmap = ListedColormap(colors)
-
-    # Plot heatmap
-    im = ax.imshow(grid_temp_masked, extent=[grid_x.min(), grid_x.max(), grid_y.min(), grid_y.max()],
-                   origin='lower', aspect='auto', cmap=cmap, vmin=np.nanmin(grid_temp), vmax=0, alpha=0.7, zorder=0)
-
-    # Colorbar: evenly spaced ticks from min to 0, last tick is red
-    n_ticks = 6  # or any number you like
-    tick_values = np.linspace(np.nanmin(grid_temp), 0, n_ticks)
-    cb = plt.colorbar(im, ax=ax, label='Ice Temperature [°C]')
-    cb.set_ticks(tick_values)
-    tick_labels = [f"{v:.1f}" for v in tick_values[:-1]] + ["0"]
-    cb.set_ticklabels(tick_labels)
-
-    # --- Set y-axis limits to glacier body only ---
-    ax.set_ylim(np.min(z_b)-2, np.max(z_s)+2)
-
-    ax.set_xlabel("Distance [m]")
-    ax.set_ylabel("Elevation [m]")
-    if title:
-        ax.set_title(title)
-    ax.grid(True, alpha=0.3)
-    ax.legend(loc='best', frameon=True)
-    format_plot(ax=ax, title=title, x_tick_rotation=0, legend_loc='upper left', adjust_linewidths=False)
-    plt.tight_layout()
-    return ax.figure, ax
-
-def plot_icetemp_profile_piecewise(
-    profile_df,
-    borehole_coords_df,
-    temp_data_dict,
-    depth_dict,
-    ax=None,
-    title=None,
-    cmap=None,
-    vmin=None,
-    vmax=None,
-    flip='auto',
-    plot_contours=True,
-    n_elev=300
-):
-    """
-    Piecewise linear interpolation of ice temperature profile.
-
-    Approach:
-    - For each borehole build a 1D temperature-vs-depth (depth below local surface).
-    - Project each borehole profile onto a single global elevation grid (so layers
-      slope with the surface).
-    - Linearly blend profiles horizontally between nearest boreholes.
-    - Clamp extrapolation to nearest sensor values and fill fully-NaN columns
-      from the nearest borehole to avoid gaps.
-    """
-    import numpy as np
-    import matplotlib.pyplot as plt
-    from matplotlib.colors import ListedColormap
-    import cmcrameri.cm as cmc
-
-    ax = ax or plt.subplots(figsize=(10, 5), dpi=150)[1]
-
-    # Required profile arrays
-    d0 = profile_df['distance'].to_numpy()
-    z_s = profile_df['zsurf'].to_numpy()
-    z_b = profile_df['zbed'].to_numpy()
-
-    # Optionally flip profile direction to consistent left->right
-    d = d0.copy()
-    if flip == 'auto':
-        if z_s[-1] < z_s[0]:
-            z_s = z_s[::-1]; z_b = z_b[::-1]; d = d0.max() - d0[::-1]
-    elif flip is True:
-        z_s = z_s[::-1]; z_b = z_b[::-1]; d = d0.max() - d0[::-1]
-
-    # Plot surface and bed outlines
-    ax.plot(d, z_s, color='k', linewidth=1.5, label='Surface')
-    ax.plot(d, z_b, color='k', linewidth=1.5, linestyle='--', label='Bed')
-
-    # Collect borehole locations and 1D (depth,temp) profiles (depth = below local surface)
-    bh_locs = []
-    bh_profiles = []  # (depths_array, temps_array, surface_elev)
-    for _, bh_row in borehole_coords_df.iterrows():
-        name = bh_row['name']
-        bh_x = float(str(bh_row['x']).replace(',', '.'))
-        bh_y = float(str(bh_row['y']).replace(',', '.'))
-
-        # find nearest point along profile (if profile has x,y)
-        profile_xy = np.column_stack([profile_df['x'], profile_df['y']]) if ('x' in profile_df and 'y' in profile_df) else None
-        if profile_xy is not None:
-            dists = np.sqrt((profile_xy[:, 0] - bh_x)**2 + (profile_xy[:, 1] - bh_y)**2)
             idx = np.argmin(dists)
-            profile_dist = d[idx]
-            surf_elev = z_s[idx]
+            loc = profile_df_plot['distance'].iloc[idx]
+            surf_elev = profile_df_plot['zsurf'].iloc[idx]
         else:
-            profile_dist = bh_x
-            surf_elev = float(np.interp(profile_dist, d, z_s))
+            loc = bh_x
+            surf_elev = np.interp(loc, d, z_s)
 
         if name in temp_data_dict and name in depth_dict:
             temps = temp_data_dict[name]
             depths = depth_dict[name]
-            # Collect only sensors present in both dicts and convert to floats
             items = sorted([
                 (float(depth), float(temps[probe]))
                 for probe, depth in depths.items()
-                if probe in temps and pd.notna(temps[probe])
+                if probe in temps and np.isfinite(temps[probe])
             ])
-            if not items:
-                continue
-            depths_arr = np.asarray([it[0] for it in items], dtype=float)
-            temps_arr = np.asarray([it[1] for it in items], dtype=float)
-            # ensure increasing depth order
-            order = np.argsort(depths_arr)
-            depths_arr = depths_arr[order]
-            temps_arr = temps_arr[order]
-            bh_locs.append(profile_dist)
-            bh_profiles.append((depths_arr, temps_arr, float(surf_elev)))
-
-            # plot borehole line and sensors
-            min_elev = surf_elev - float(np.max(depths_arr))
-            ax.plot([profile_dist, profile_dist], [min_elev, surf_elev], color='k', linewidth=1.5)
-            for depth, temp in zip(depths_arr, temps_arr):
-                ax.plot(profile_dist, surf_elev - depth, 'ko', markersize=4)
-            ax.text(profile_dist, surf_elev + 6, name, color='red', fontsize=10, ha='center', va='bottom', zorder=12)
-
-    if len(bh_locs) == 0:
-        raise ValueError("No borehole profiles found in provided dicts.")
-
-    # sort boreholes along profile
-    bh_locs = np.array(bh_locs)
-    sort_idx = np.argsort(bh_locs)
-    bh_locs = bh_locs[sort_idx]
-    bh_profiles = [bh_profiles[i] for i in sort_idx]
-
-    # measured temperature bounds (for clipping/color scaling)
-    measured_vals = np.hstack([p[1] for p in bh_profiles])
-    meas_min = float(np.nanmin(measured_vals))
-    meas_max = float(np.nanmax(measured_vals))
-
-    # Build global regular elevation grid (imshow requires rectangular grid)
-    elev_min = float(np.nanmin(z_b)) - 1.0
-    elev_max = float(np.nanmax(z_s)) + 1.0
-    grid_elev = np.linspace(elev_min, elev_max, n_elev)  # ascending (bottom->top)
-    grid_x = d
-    grid_xx, grid_yy = np.meshgrid(grid_x, grid_elev)  # grid_yy are elevations
-
-    # Project each borehole's profile onto the global elevation grid.
-    # depth_on_grid = surface_bh - elevation  (positive below surface)
-    interp_profiles_on_elev = []
-    for depths_arr, temps_arr, surf_elev in bh_profiles:
-        depths_on_grid = surf_elev - grid_elev  # positive below surface
-        # clamp extrapolation to nearest sensor (avoid runaway linear extrapolation)
-        if depths_arr.size == 1:
-            vals = np.full_like(depths_on_grid, temps_arr[0], dtype=float)
-        else:
-            vals = np.interp(depths_on_grid, depths_arr, temps_arr, left=temps_arr[0], right=temps_arr[-1])
-        # values above the borehole surface are invalid -> NaN
-        vals[grid_elev > surf_elev] = np.nan
-        interp_profiles_on_elev.append(vals)
-    interp_profiles_on_elev = np.array(interp_profiles_on_elev)  # shape (n_bh, n_elev)
-
-    # Horizontal blending: for each distance column, interpolate between nearest boreholes
-    grid_temp = np.full((grid_elev.size, grid_x.size), np.nan, dtype=float)
-    for i, x in enumerate(grid_x):
-        if x <= bh_locs[0]:
-            grid_temp[:, i] = interp_profiles_on_elev[0]
-        elif x >= bh_locs[-1]:
-            grid_temp[:, i] = interp_profiles_on_elev[-1]
-        else:
-            right = np.searchsorted(bh_locs, x)
-            left = right - 1
-            x0, x1 = bh_locs[left], bh_locs[right]
-            t0 = interp_profiles_on_elev[left]
-            t1 = interp_profiles_on_elev[right]
-            w = (x - x0) / (x1 - x0) if (x1 - x0) != 0 else 0.0
-            blended = (1 - w) * t0 + w * t1
-            both_nan = np.isnan(t0) & np.isnan(t1)
-            blended[both_nan] = np.nan
-            grid_temp[:, i] = blended
-
-    # Fill entirely-NaN columns with nearest borehole profile (prevents gaps)
-    for i, x in enumerate(grid_x):
-        if np.all(np.isnan(grid_temp[:, i])):
-            j = int(np.argmin(np.abs(bh_locs - x)))
-            grid_temp[:, i] = interp_profiles_on_elev[j]
-
-    # Mask above surface and below bed for each column
-    for i, x in enumerate(grid_x):
-        surf_at_x = float(np.interp(x, d, z_s))
-        bed_at_x = float(np.interp(x, d, z_b))
-        above = grid_elev > surf_at_x
-        below = grid_elev < bed_at_x
-        grid_temp[above, i] = np.nan
-        grid_temp[below, i] = np.nan
-
-    # Clip to measured bounds (avoid improbable extremes)
-    grid_temp = np.where(np.isfinite(grid_temp), np.clip(grid_temp, meas_min, meas_max), np.nan)
-
-    # Colormap: blue->...->red (preserve previous stylistic choice)
-    base = cmc.vik(np.linspace(0, 0.6, 128))
-    red = np.array(cmc.vik(1.0)).reshape(1, -1)
-    colors = np.vstack([base, red])
-    cmap_use = ListedColormap(colors)
-
-    # Plot heatmap (distance x elevation)
-    im = ax.imshow(
-        grid_temp,
-        extent=[grid_x.min(), grid_x.max(), grid_elev.min(), grid_elev.max()],
-        origin='lower',
-        aspect='auto',
-        cmap=cmap_use if cmap is None else cmap,
-        vmin=meas_min if vmin is None else vmin,
-        vmax=meas_max if vmax is None else vmax,
-        alpha=0.85,
-        zorder=0
-    )
-
-    # Contours (isotherms)
-    if plot_contours:
-        levels = np.linspace(meas_min, meas_max, 12)
-        ax.contour(grid_xx, grid_yy, grid_temp, levels=levels, colors='k', linewidths=0.6, alpha=0.5)
-
-    # Colorbar
-    cb = plt.colorbar(im, ax=ax, label='Ice Temperature [°C]')
-    n_ticks = 6
-    tick_values = np.linspace(meas_min, meas_max, n_ticks)
-    cb.set_ticks(tick_values)
-    cb.set_ticklabels([f"{v:.2f}" for v in tick_values])
-
-    ax.set_ylim(np.min(z_b) - 2, np.max(z_s) + 2)
-    ax.set_xlabel("Distance [m]")
-    ax.set_ylabel("Elevation [m]")
-    if title:
-        ax.set_title(title)
-    ax.grid(True, alpha=0.3)
-    ax.legend(loc='best', frameon=True)
-    format_plot(ax=ax, title=title, x_tick_rotation=0, legend_loc='upper left', adjust_linewidths=False)
-    plt.tight_layout()
-    return ax.figure, ax
-
-def plot_icetemp_profile_stratified(
-    profile_df,
-    borehole_coords_df,
-    temp_data_dict,
-    depth_dict,
-    ax=None,
-    title=None,
-    cmap=None,
-    vmin=None,
-    vmax=None,
-    flip='auto',
-    n_depth=200,
-    n_elev=300,
-    plot_contours=True
-):
-    """
-    Stratified interpolation of englacial temperature relative to surface,
-    with improved temperate layer handling (concentric isotherms).
-    """
-
-    ax = ax or plt.subplots(figsize=(10, 5), dpi=150)[1]
-
-    d0 = profile_df['distance'].to_numpy()
-    z_s = profile_df['zsurf'].to_numpy()
-    z_b = profile_df['zbed'].to_numpy()
-
-    # optionally flip so left->right goes downhill->uphill consistently
-    d = d0.copy()
-    if flip == 'auto':
-        if z_s[-1] < z_s[0]:
-            z_s = z_s[::-1]; z_b = z_b[::-1]; d = d0.max() - d0[::-1]
-    elif flip is True:
-        z_s = z_s[::-1]; z_b = z_b[::-1]; d = d0.max() - d0[::-1]
-
-    ax.plot(d, z_s, color='k', linewidth=1.5, label='Surface')
-    ax.plot(d, z_b, color='k', linewidth=1.5, linestyle='--', label='Bed')
-
-    # collect boreholes: location along profile and depth/temp arrays (depth=below local surface)
-    bh_locs = []
-    bh_depths_list = []
-    bh_temps_list = []
-    bh_surf = []
-
-    for _, bh_row in borehole_coords_df.iterrows():
-        name = bh_row['name']
-        bh_x = float(str(bh_row['x']).replace(',', '.'))
-        bh_y = float(str(bh_row['y']).replace(',', '.'))
-
-        profile_xy = np.column_stack([profile_df['x'], profile_df['y']]) if ('x' in profile_df and 'y' in profile_df) else None
-        if profile_xy is not None:
-            dists = np.hypot(profile_xy[:,0] - bh_x, profile_xy[:,1] - bh_y)
-            idx = int(np.argmin(dists))
-            loc = d[idx]
-            surf_elev = float(z_s[idx])
-        else:
-            loc = float(bh_x)
-            surf_elev = float(np.interp(loc, d, z_s))
-
-        if name in temp_data_dict and name in depth_dict:
-            temps = temp_data_dict[name]
-            depths = depth_dict[name]
-            items = sorted([(float(depth), float(temps[probe]))
-                            for probe, depth in depths.items() if probe in temps and pd.notna(temps[probe])])
             if not items:
                 continue
             depths_arr = np.array([it[0] for it in items], dtype=float)
             temps_arr = np.array([it[1] for it in items], dtype=float)
-            order = np.argsort(depths_arr)
-            depths_arr = depths_arr[order]
-            temps_arr = temps_arr[order]
-
-            bh_locs.append(loc)
-            bh_depths_list.append(depths_arr)
-            bh_temps_list.append(temps_arr)
-            bh_surf.append(surf_elev)
-
-            # plot borehole line & sensors
-            min_elev = surf_elev - float(np.max(depths_arr))
-            ax.plot([loc, loc], [min_elev, surf_elev], color='k', linewidth=1.2)
+            
+            # Plot borehole line and sensors
+            min_elev = surf_elev - np.max(depths_arr)
+            ax.plot([loc, loc], [min_elev, surf_elev], color='k', linewidth=1.2, zorder=11)
             for depth, temp in zip(depths_arr, temps_arr):
-                ax.plot(loc, surf_elev - depth, 'ko', markersize=4)
-            ax.text(loc, surf_elev + 6, name, color='red', fontsize=10, ha='center', va='bottom', zorder=12)
+                ax.plot(loc, surf_elev - depth, 'ko', markersize=4, zorder=12)
+            ax.text(loc, surf_elev + 6, name, color='red', fontsize=10, ha='center', va='bottom', zorder=13)
 
-    if len(bh_locs) == 0:
-        raise ValueError("No borehole profiles found in provided dicts.")
-
-    # sort boreholes along profile
-    bh_locs = np.array(bh_locs)
-    sort_idx = np.argsort(bh_locs)
-    bh_locs = bh_locs[sort_idx]
-    bh_depths_list = [bh_depths_list[i] for i in sort_idx]
-    bh_temps_list = [bh_temps_list[i] for i in sort_idx]
-    bh_surf = np.array(bh_surf)[sort_idx]
-
-    # --- Use the new stratified interpolation function ---
-    grid_temp, grid_elev = interpolate_temperature_stratified(
-        bh_locs, bh_surf, bh_depths_list, bh_temps_list,
-        d, z_s, z_b, n_depth=n_depth, n_elev=n_elev
-    )
-
-    # measured bounds for clipping / color scaling
-    measured_vals = np.hstack(bh_temps_list)
+    # --- Setup colormap and levels ---
+    measured_vals = []
+    for name in temp_data_dict:
+        measured_vals.extend([temp for temp in temp_data_dict[name].values if np.isfinite(temp)])
     meas_min = float(np.nanmin(measured_vals))
     meas_max = float(np.nanmax(measured_vals))
 
-    # colormap
-    base = cmc.vik(np.linspace(0, 0.6, 128))
-    red = np.array(cmc.vik(1.0)).reshape(1, -1)
-    colors = np.vstack([base, red])
-    cmap_use = ListedColormap(colors) if cmap is None else cmap
+    step = 0.1
+    tick_start = np.floor(meas_min / step) * step
+    tick_end = np.ceil(meas_max / step) * step
 
-    im = ax.imshow(
-        grid_temp,
-        extent=[d.min(), d.max(), grid_elev.min(), grid_elev.max()],
-        origin='lower',
-        aspect='auto',
-        cmap=cmap_use,
-        vmin=meas_min if vmin is None else vmin,
-        vmax=meas_max if vmax is None else vmax,
-        alpha=0.85,
-        zorder=0
-    )
+    levels = np.arange(tick_start, tick_end + step/2, step)
+    if 0.0 not in levels:
+        levels = np.append(levels, 0.0)
+    levels = np.unique(np.sort(levels))
 
-    # contours
-    if plot_contours:
-        levels = np.linspace(meas_min, meas_max, 10)
-        grid_xx, grid_yy = np.meshgrid(d, grid_elev)
-        ax.contour(grid_xx, grid_yy, grid_temp, levels=levels, colors='k', linewidths=0.6, alpha=0.5)
+    cmap_use = discrete_icetemp_cmap(levels) if cmap is None else cmap
+    norm = BoundaryNorm(levels, cmap_use.N)
 
+    # --- Plot temperature heatmap for each segment ---
+    for seg_data in all_segments_data:
+        im = ax.imshow(
+            seg_data['grid_temp'],
+            extent=[seg_data['profile_x'].min(), seg_data['profile_x'].max(), 
+                   seg_data['elev_grid'].min(), seg_data['elev_grid'].max()],
+            origin='lower',
+            aspect='auto',
+            cmap=cmap_use,
+            norm=norm,
+            alpha=0.85,
+            zorder=1
+        )
+
+        # --- Plot contours for each segment ---
+        if plot_contours:
+            ax.contour(seg_data['grid_xx'], seg_data['grid_yy'], seg_data['grid_temp'], 
+                      levels=levels, colors='k', linewidths=0.6, alpha=0.5, zorder=5)
+        
+        # Highlight 0°C isotherm
+        ax.contour(seg_data['grid_xx'], seg_data['grid_yy'], seg_data['grid_temp'],
+                  levels=[0.0], colors='red', linewidths=2.2, alpha=0.95, zorder=6)
+
+    # --- Colorbar ---
     cb = plt.colorbar(im, ax=ax, label='Ice Temperature [°C]')
-    tick_values = np.linspace(meas_min, meas_max, 6)
-    cb.set_ticks(tick_values)
-    cb.set_ticklabels([f"{v:.2f}" for v in tick_values])
+    cb.set_ticks(levels)
+    cb.set_ticklabels([f"{v:.1f}" for v in levels])
 
     ax.set_ylim(np.min(z_b) - 2, np.max(z_s) + 2)
     ax.set_xlabel("Distance [m]")
@@ -1141,7 +863,15 @@ def plot_icetemp_profile_stratified(
     if title:
         ax.set_title(title)
     ax.grid(True, alpha=0.3)
-    ax.legend(loc='best', frameon=True)
+
+    # Create custom legend
+    cts_handle = Line2D([0], [0], color='red', linewidth=2.2, label='CTS (0°C isotherm)')
+    handles, labels = ax.get_legend_handles_labels()
+    handles.append(cts_handle)
+    labels.append('CTS (0°C isotherm)')
+    ax.legend(handles, labels, frameon=True, fancybox=False, edgecolor='black', 
+             framealpha=1, facecolor='white', loc="upper left", ncol=1)
+
     format_plot(ax=ax, title=title, x_tick_rotation=0, legend_loc='upper left', adjust_linewidths=False)
     plt.tight_layout()
     return ax.figure, ax
