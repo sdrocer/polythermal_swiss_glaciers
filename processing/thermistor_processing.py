@@ -203,111 +203,122 @@ class ThermistorData:
 
         return df
 
-    def get_ntc_data_with_offsets(self, logger_id, offsets_df, snapshot_day=None, return_daily_average=False):
+    def get_ntc_data_with_offsets(self, logger_id, offsets_df, snapshot_day=None, aggregate=None):
         """
-        Get NTC data with offset correction applied.
-        
+        Get NTC data with offset correction and optional aggregation.
+
         Parameters:
-        -----------
-        logger_id : int
-            Logger ID to look up offsets in the offsets_df.
-            
-        offsets_df : pd.DataFrame
-            DataFrame containing offsets with columns: Logger, Black Probe Offset, White Probe Offset
-            
-        snapshot_day : str, optional
-            If provided, filters for that day. Accepts formats like '20250819', '2025-08-19', '19.08.2025'.
-            If None, returns all data.
-            
-        return_daily_average : bool, default False
-            If True and snapshot_day is provided, returns daily averages for each probe.
-            If False, returns all data points for the snapshot day.
-        
+        - logger_id: value to match in offsets_df['Logger'] (matched as string).
+        - offsets_df: DataFrame with columns ['Logger','Black Probe Offset','White Probe Offset'].
+        - snapshot_day: date-like string for selecting day/month/year when aggregating.
+            Accepts 'YYYYMMDD', 'YYYY-MM-DD', 'DD.MM.YYYY' (time part allowed; ignored).
+        - aggregate: None | 'daily' | 'monthly' | 'annual' | 'all'
+            • None: no aggregation. If snapshot_day is given -> return all rows for that day,
+                else return the full (offset-corrected) time series.
+            • 'daily': mean of that day (requires snapshot_day).
+            • 'monthly': mean for the month of snapshot_day (requires snapshot_day).
+            • 'annual': mean for the year of snapshot_day (requires snapshot_day).
+            • 'all': mean across the entire dataset (ignores snapshot_day).
+
         Returns:
-        --------
-        pd.DataFrame with columns: ['Measurement', 'TIME', 'Black Probe Temperature', 'White Probe Temperature']
-        with offsets already applied (subtracted from measured temperatures).
-        If return_daily_average=True and snapshot_day is provided, returns single row with daily averages.
+        - If aggregated: single-row DataFrame with columns
+            ['Measurement','TIME','Black Probe Temperature','White Probe Temperature'].
+            TIME is set to a representative timestamp (noon/mid-month/mid-year/center of data).
+        - Otherwise: offset-corrected time series (optionally filtered to snapshot_day).
         """
-        # Read the CSV file with the correct encoding and skip the first 5 rows
-        df = pd.read_csv(self.file_path, sep=self.delimiter, header=None, skiprows=5, 
-                    names=['Measurement', 'TIME', 'Black Probe Temperature', 'White Probe Temperature'], 
-                    encoding='latin1')
-        
-        # Convert the TIME column to datetime format
+        import pandas as pd
+        import numpy as np
+
+        # Read raw file
+        df = pd.read_csv(
+            self.file_path, sep=self.delimiter, header=None, skiprows=5,
+            names=['Measurement', 'TIME', 'Black Probe Temperature', 'White Probe Temperature'],
+            encoding='latin1'
+        )
         df['TIME'] = pd.to_datetime(df['TIME'])
-        
-        # Remove the special character (°C) from the temperature columns and convert to float
+
+        # Clean temperature strings to floats
         df['Black Probe Temperature'] = df['Black Probe Temperature'].apply(lambda x: re.sub(r'[^0-9.-]', '', str(x))).astype(float)
         df['White Probe Temperature'] = df['White Probe Temperature'].apply(lambda x: re.sub(r'[^0-9.-]', '', str(x))).astype(float)
-        
-        # Replace -42.004 with NaN values
+
+        # Replace error sentinel
         df['Black Probe Temperature'] = df['Black Probe Temperature'].replace(-42.004, np.nan)
         df['White Probe Temperature'] = df['White Probe Temperature'].replace(-42.004, np.nan)
 
-        # Look up offsets in the provided DataFrame
-        logger_row = offsets_df[offsets_df['Logger'] == logger_id]
-        if len(logger_row) == 0:
-            print(f"Warning: Logger ID {logger_id} not found in offsets DataFrame")
+        # Find offsets (robust match as string)
+        off = offsets_df.copy()
+        off['Logger'] = off['Logger'].astype(str)
+        row = off[off['Logger'] == str(logger_id)]
+        if row.empty:
+            print(f"Warning: Logger ID {logger_id} not found in offsets DataFrame; using zero offsets.")
             black_offset = 0.0
             white_offset = 0.0
         else:
-            black_offset = float(logger_row['Black Probe Offset'].iloc[0])
-            white_offset = float(logger_row['White Probe Offset'].iloc[0])
+            black_offset = float(row['Black Probe Offset'].iloc[0])
+            white_offset = float(row['White Probe Offset'].iloc[0])
 
-        # Apply offsets (subtract from measured temperatures)
+        # Apply offsets (subtract)
         df['Black Probe Temperature'] = df['Black Probe Temperature'] - black_offset
         df['White Probe Temperature'] = df['White Probe Temperature'] - white_offset
 
-        # If snapshot_day is provided, filter for that day
-        if snapshot_day is not None:
-            # Parse snapshot_day with same logic as get_chain_data
-            day = None
-            try:
-                day = pd.to_datetime(snapshot_day, format='%d.%m.%Y', errors='coerce')
-            except Exception:
-                pass
-            if pd.isna(day):
-                try:
-                    day = pd.to_datetime(snapshot_day, format='%Y-%m-%d', errors='coerce')
-                except Exception:
-                    pass
-            if pd.isna(day):
-                try:
-                    day = pd.to_datetime(str(snapshot_day), format='%Y%m%d', errors='coerce')
-                except Exception:
-                    pass
-            if pd.isna(day):
+        # Helper to parse a day
+        def _parse_day(val):
+            if val is None:
+                return None
+            for fmt in ('%d.%m.%Y', '%Y-%m-%d', '%Y%m%d'):
+                d = pd.to_datetime(val, format=fmt, errors='coerce')
+                if not pd.isna(d):
+                    return d.normalize()
+            d = pd.to_datetime(val, errors='coerce')
+            return None if pd.isna(d) else d.normalize()
+
+        # No aggregation requested
+        if aggregate is None:
+            if snapshot_day is None:
+                return df
+            day = _parse_day(snapshot_day)
+            if day is None:
                 raise ValueError(f"Could not parse snapshot_day: {snapshot_day}")
-            
-            day = day.normalize()
-            start_time = day
-            end_time = day + pd.Timedelta(days=1)
-            
-            # Filter by day
-            day_df = df[(df['TIME'] >= start_time) & (df['TIME'] < end_time)]
-            
+            start, end = day, day + pd.Timedelta(days=1)
+            day_df = df[(df['TIME'] >= start) & (df['TIME'] < end)]
             if day_df.empty:
                 raise ValueError(f"No data found for day {snapshot_day}")
-            
-            # If return_daily_average is True, calculate daily averages
-            if return_daily_average:
-                # Calculate daily averages
-                avg_black = day_df['Black Probe Temperature'].mean()
-                avg_white = day_df['White Probe Temperature'].mean()
-                
-                # Return single-row DataFrame with daily averages (TIME set to noon)
-                return pd.DataFrame({
-                    'Measurement': [1],
-                    'TIME': [start_time + pd.Timedelta(hours=12)],
-                    'Black Probe Temperature': [avg_black],
-                    'White Probe Temperature': [avg_white]
-                })
-            else:
-                # Return all data points for the snapshot day
-                return day_df
+            return day_df
 
-        return df
+        # Aggregation
+        agg = str(aggregate).lower()
+        if agg in {'all', 'overall'}:
+            subset = df
+            label_time = (df['TIME'].min() + (df['TIME'].max() - df['TIME'].min()) / 2) if not df.empty else pd.NaT
+        else:
+            day = _parse_day(snapshot_day)
+            if day is None:
+                raise ValueError(f"snapshot_day is required for aggregate='{aggregate}' and could not be parsed.")
+            if agg in {'daily', 'day'}:
+                start, end = day, day + pd.Timedelta(days=1)
+                subset = df[(df['TIME'] >= start) & (df['TIME'] < end)]
+                label_time = start + pd.Timedelta(hours=12)
+            elif agg in {'monthly', 'month'}:
+                subset = df[(df['TIME'].dt.year == day.year) & (df['TIME'].dt.month == day.month)]
+                label_time = pd.Timestamp(day.year, day.month, 15)
+            elif agg in {'annual', 'year'}:
+                subset = df[df['TIME'].dt.year == day.year]
+                label_time = pd.Timestamp(day.year, 7, 1)
+            else:
+                raise ValueError("aggregate must be one of: daily, monthly, annual, all")
+
+        if subset.empty:
+            raise ValueError(f"No data found for selection (aggregate='{aggregate}', snapshot_day={snapshot_day}).")
+
+        avg_black = subset['Black Probe Temperature'].mean()
+        avg_white = subset['White Probe Temperature'].mean()
+
+        return pd.DataFrame({
+            'Measurement': [1],
+            'TIME': [label_time],
+            'Black Probe Temperature': [avg_black],
+            'White Probe Temperature': [avg_white]
+        })
 
     def get_multiple_ntc_data(self):
         """
