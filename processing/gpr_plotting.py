@@ -536,7 +536,7 @@ def plot_thickness_profile(profile_df: pd.DataFrame, *, ax=None, title=None,
             return y
         return ndimage.gaussian_filter1d(y, sigma=sigma, mode='nearest')
 
-    ax = ax or plt.subplots(figsize=(10,5), dpi=150)[1]
+    ax = ax or plt.subplots(figsize=(11, 5), dpi=150)[1]
     d0 = profile_df['distance'].to_numpy()
     z_s = profile_df['zsurf'].to_numpy()
     z_b = profile_df['zbed'].to_numpy()
@@ -637,241 +637,248 @@ def plot_icetemp_profile(
     n_depth=500,
     n_elev=600,
     plot_contours=True,
-    break_threshold=50.0  # NEW: threshold to detect profile breaks
+    break_threshold=50.0,
+    smooth_sigma=0.0,
+    temp_step=0.1        # NEW: controls contour interval AND colorbar tick spacing
 ):
     """
-    Plots glacier cross-section with borehole positions and interpolated temperature heatmap.
-    Handles discontinuous profiles by splitting into segments.
+    Plot glacier cross-section with borehole temps interpolated to a 2D temperature field.
+    - temp_step sets both the contour interval and colorbar tick spacing (default 0.1°C).
+      The final positive bin is [0.0, temp_step] and is colored red.
     """
     import numpy as np
     import matplotlib.pyplot as plt
     from matplotlib.colors import BoundaryNorm
     from matplotlib.lines import Line2D
+    from scipy.ndimage import gaussian_filter1d
 
-    # --- Prepare profile arrays ---
-    ax = ax or plt.subplots(figsize=(10,5), dpi=150)[1]
-    d0 = profile_df['distance'].to_numpy()
-    z_s = profile_df['zsurf'].to_numpy()
-    z_b = profile_df['zbed'].to_numpy()
+    # Helpers
+    def _smooth(y, s):
+        y = np.asarray(y, float)
+        if s and s > 0 and y.size >= 3:
+            return gaussian_filter1d(y, sigma=float(s), mode='nearest')
+        return y
 
-    # Flip logic
-    d = d0
-    profile_df_plot = profile_df.copy()
-    if flip == 'auto':
-        if z_s[-1] < z_s[0]:
-            z_s = z_s[::-1]; z_b = z_b[::-1]; d = d0.max() - d0[::-1]
-            profile_df_plot = profile_df.iloc[::-1].copy()
-            profile_df_plot['distance'] = d
-            profile_df_plot['zsurf'] = z_s
-            profile_df_plot['zbed'] = z_b
-    elif flip is True or flip == 'true':
-        z_s = z_s[::-1]; z_b = z_b[::-1]; d = d0.max() - d0[::-1]
-        profile_df_plot = profile_df.iloc[::-1].copy()
-        profile_df_plot['distance'] = d
-        profile_df_plot['zsurf'] = z_s
-        profile_df_plot['zbed'] = z_b
+    def _edges(nodes):
+        x = np.asarray(nodes, float)
+        if x.size == 1:
+            dx = 0.5
+            return np.array([x[0] - dx, x[0] + dx])
+        dx = np.diff(x)
+        return np.r_[x[0] - dx[0]/2, 0.5*(x[:-1] + x[1:]), x[-1] + dx[-1]/2]
 
-    # --- Detect breaks in the profile (same logic as plot_thickness_profile) ---
-    dist_diffs = np.diff(d)
-    break_indices = np.where(dist_diffs > break_threshold)[0]
-    
-    # Split into continuous segments
+    def _unique_sorted(vals, tol=1e-12):
+        v = np.sort(np.asarray(vals, float))
+        if v.size == 0:
+            return v
+        out = [v[0]]
+        for t in v[1:]:
+            if abs(t - out[-1]) > tol:
+                out.append(t)
+        return np.array(out, float)
+
+    def _decimals_from_step(step):
+        if step is None or step <= 0:
+            return 1
+        return int(min(6, max(0, np.ceil(-np.log10(step)))))
+
+    # Prepare and optional flip
+    d0 = np.asarray(profile_df['distance'].to_numpy(), float)
+    z_s = np.asarray(profile_df['zsurf'].to_numpy(), float)
+    z_b = np.asarray(profile_df['zbed'].to_numpy(), float)
+
+    d = d0.copy()
+    prof = profile_df.copy()
+    flip_true = (flip is True) or (isinstance(flip, str) and flip.lower() == 'true')
+    if flip_true or (flip == 'auto' and z_s[-1] < z_s[0]):
+        d = d0.max() - d0[::-1]
+        z_s = z_s[::-1]
+        z_b = z_b[::-1]
+        prof = profile_df.iloc[::-1].copy()
+        prof['distance'] = d
+        prof['zsurf'] = z_s
+        prof['zbed'] = z_b
+
+    # Breaks (use for segmenting only)
+    diffs = np.diff(d)
+    brk_idx = np.where(diffs > float(break_threshold))[0]
     segments = []
-    start_idx = 0
-    
-    if len(break_indices) == 0:
-        # No breaks - single segment
+    start = 0
+    if brk_idx.size == 0:
         segments.append((0, len(d)))
     else:
-        # Multiple segments separated by breaks
-        print(f"Profile has {len(break_indices)} break(s) at distances: {d[break_indices + 1]}")
-        
-        for break_idx in break_indices:
-            end_idx = break_idx + 1
-            segments.append((start_idx, end_idx))
-            start_idx = end_idx
-        segments.append((start_idx, len(d)))  # Last segment
+        for bi in brk_idx:
+            segments.append((start, bi + 1))
+            start = bi + 1
+        segments.append((start, len(d)))
 
-    # --- Plot each segment separately ---
-    for seg_i, (start, end) in enumerate(segments):
-        if start >= end or end - start < 2:
+    # Figure
+    if ax is None:
+        fig, ax = plt.subplots(figsize=(11, 5), dpi=300)
+    else:
+        fig = ax.figure
+
+    # Collect measured values
+    measured_vals = []
+    for _, s in temp_data_dict.items():
+        if s is None:
             continue
-            
-        # Extract segment data
-        d_seg = d[start:end]
-        z_s_seg = z_s[start:end]
-        z_b_seg = z_b[start:end]
-        
-        # Create segment profile DataFrame
-        profile_seg = profile_df_plot.iloc[start:end].copy()
-        
-        # --- Generate temperature field for this segment only ---
-        try:
-            grid_temp_elev_seg, elev_grid_seg, profile_x_seg = interpolate_glacier_temperature_field_2d(
-                profile_seg,
-                borehole_coords_df,
-                temp_data_dict,
-                depth_dict,
-                n_depth=n_depth,
-                n_elev=n_elev
-            )
-            
-            # --- CREATE GLACIER MASK for this segment ---
-            grid_xx_seg, grid_yy_seg = np.meshgrid(profile_x_seg, elev_grid_seg)
-            
-            # Interpolate surface and bed elevations to the grid x-coordinates
-            surface_interp_seg = np.interp(profile_x_seg, d_seg, z_s_seg)
-            bed_interp_seg = np.interp(profile_x_seg, d_seg, z_b_seg)
-            
-            # Create mask: True where we're inside the glacier
-            glacier_mask_seg = np.zeros_like(grid_temp_elev_seg, dtype=bool)
-            for i, x in enumerate(profile_x_seg):
-                surf_elev = surface_interp_seg[i]
-                bed_elev = bed_interp_seg[i]
-                mask_col = (elev_grid_seg >= bed_elev) & (elev_grid_seg <= surf_elev)
-                glacier_mask_seg[:, i] = mask_col
-            
-            # Apply mask to temperature grid
-            grid_temp_masked_seg = np.ma.masked_where(~glacier_mask_seg, grid_temp_elev_seg)
-            
-            # Store segment data for plotting
-            if seg_i == 0:
-                # Initialize with first segment
-                all_segments_data = [{
-                    'grid_temp': grid_temp_masked_seg,
-                    'grid_xx': grid_xx_seg,
-                    'grid_yy': grid_yy_seg,
-                    'profile_x': profile_x_seg,
-                    'elev_grid': elev_grid_seg
-                }]
-            else:
-                # Add additional segments
-                all_segments_data.append({
-                    'grid_temp': grid_temp_masked_seg,
-                    'grid_xx': grid_xx_seg,
-                    'grid_yy': grid_yy_seg,
-                    'profile_x': profile_x_seg,
-                    'elev_grid': elev_grid_seg
-                })
-                
-        except Exception as e:
-            print(f"Warning: Could not interpolate temperature for segment {seg_i}: {e}")
-            continue
+        vals = list(s.values) if hasattr(s, 'values') else list(getattr(s, 'values', []) or getattr(s, 'values()', []))
+        if not vals and isinstance(s, dict):
+            vals = list(s.values())
+        measured_vals.extend([float(v) for v in vals if np.isfinite(v)])
+    if not measured_vals:
+        measured_vals = [-1.0, 0.0]
 
-        # --- Plot surface and bed for this segment ---
-        label_surface = 'Surface' if seg_i == 0 else None
-        label_bed = 'Bed' if seg_i == 0 else None
-        
-        ax.plot(d_seg, z_s_seg, color='k', linewidth=1.5, label=label_surface, zorder=10)
-        ax.plot(d_seg, z_b_seg, color='k', linewidth=1.5, linestyle='--', label=label_bed, zorder=10)
+    # Unified temperature step for bins, contours and colorbar ticks
+    step = float(temp_step) if temp_step and temp_step > 0 else 0.1
+    lo_levels = np.floor(np.nanmin(measured_vals) / step) * step
+    any_positive = (np.nanmax(measured_vals) > 0.0 + 1e-12)
 
-    # --- Mark breaks with vertical lines ---
-    if len(break_indices) > 0:
-        y_min = min(np.min(z_b), np.min(z_s)) - 5
-        y_max = max(np.max(z_b), np.max(z_s)) + 5
-        
-        for i, break_idx in enumerate(break_indices):
-            break_distance = d[break_idx + 1]
-            ax.axvline(break_distance, color='red', linestyle='--', linewidth=1.0, 
-                      alpha=0.5, label='Profile break' if i == 0 else None, zorder=5)
+    # Discrete bins from lo to 0 by step, plus one positive edge at +step
+    neg_to_zero_bins = np.arange(lo_levels, 0.0 + step, step)  # includes 0.0
+    levels = _unique_sorted(np.append(neg_to_zero_bins, step))
 
-    # --- Plot borehole lines and sensors ---
-    for _, bh_row in borehole_coords_df.iterrows():
-        name = bh_row['name']
-        bh_x = float(str(bh_row['x']).replace(',', '.'))
-        bh_y = float(str(bh_row['y']).replace(',', '.'))
-        profile_xy = np.column_stack([profile_df_plot['x'], profile_df_plot['y']]) if 'x' in profile_df_plot and 'y' in profile_df_plot else None
-        if profile_xy is not None:
-            dists = np.sqrt((profile_xy[:,0] - bh_x)**2 + (profile_xy[:,1] - bh_y)**2)
-            idx = np.argmin(dists)
-            loc = profile_df_plot['distance'].iloc[idx]
-            surf_elev = profile_df_plot['zsurf'].iloc[idx]
+    # Colormap: blue bins for negatives, single red bin for [0.0, step]
+    n_intervals = len(levels) - 1
+    if n_intervals <= 0:
+        colors = np.array(cmc.vik(1.0)).reshape(1, -1)
+    else:
+        if n_intervals > 1:
+            blue = cmc.vik(np.linspace(0.0, 0.5, n_intervals - 1))
+            red = np.array(cmc.vik(1.0)).reshape(1, -1)
+            colors = np.vstack([blue, red])
         else:
-            loc = bh_x
-            surf_elev = np.interp(loc, d, z_s)
+            colors = np.array(cmc.vik(1.0)).reshape(1, -1)
+    cmap_use = ListedColormap(colors, name="icetemp_discrete_runtime") if cmap is None else cmap
 
+    norm = BoundaryNorm(levels, cmap_use.N, clip=True)
+    im = None
+
+    # Plot per segment
+    for si, (i0, i1) in enumerate(segments):
+        if i1 - i0 < 2:
+            continue
+
+        d_seg = d[i0:i1]
+        zs_seg = _smooth(z_s[i0:i1], smooth_sigma)
+        zb_seg = _smooth(z_b[i0:i1], smooth_sigma)
+
+        prof_seg = prof.iloc[i0:i1].copy()
+        try:
+            T_seg, elevs_seg, xnodes_seg = interpolate_glacier_temperature_field_2d(
+                prof_seg, borehole_coords_df, temp_data_dict, depth_dict,
+                n_depth=n_depth, n_elev=n_elev
+            )
+
+            # Mask using the same x-grid as T
+            zs_on_x = np.interp(xnodes_seg, d_seg, zs_seg)
+            zb_on_x = np.interp(xnodes_seg, d_seg, zb_seg)
+            inside = ((elevs_seg[:, None] >= zb_on_x[None, :]) &
+                      (elevs_seg[:, None] <= zs_on_x[None, :]))
+            T_masked = np.ma.masked_where(~inside, T_seg)
+
+            # Draw on true, non-uniform grid
+            x_edges = _edges(xnodes_seg)
+            y_edges = _edges(elevs_seg)
+            im = ax.pcolormesh(
+                x_edges, y_edges, T_masked,
+                cmap=cmap_use, norm=norm, shading='auto', alpha=0.85, zorder=1
+            )
+
+            # Contours and CTS (use the same step)
+            if plot_contours:
+                XX, YY = np.meshgrid(xnodes_seg, elevs_seg)
+                ax.contour(XX, YY, T_masked, levels=levels,
+                           colors='k', linewidths=0.6, alpha=0.5, zorder=5)
+                ax.contour(XX, YY, T_masked, levels=[0.0],
+                           colors='red', linewidths=2.2, alpha=0.95, zorder=6)
+
+        except Exception as e:
+            print(f"Warning: temperature interpolation for segment {si} failed: {e}")
+
+        # Smoothed outlines
+        ax.plot(d_seg, zs_seg, color='k', lw=1.5, label='Surface' if si == 0 else None, zorder=10)
+        ax.plot(d_seg, zb_seg, color='k', lw=1.5, ls='--', label='Bed' if si == 0 else None, zorder=10)
+
+    # Boreholes and sensors (unchanged)
+    prof_has_xy = ('x' in prof.columns) and ('y' in prof.columns)
+    prof_xy = np.column_stack([np.asarray(prof['x'], float), np.asarray(prof['y'], float)]) if prof_has_xy else None
+    for _, r in borehole_coords_df.iterrows():
+        name = r['name']
+        bx = float(str(r['x']).replace(',', '.'))
+        by = float(str(r['y']).replace(',', '.'))
+        if prof_xy is not None:
+            j = int(np.argmin(np.hypot(prof_xy[:, 0] - bx, prof_xy[:, 1] - by)))
+            loc = float(prof['distance'].iloc[j])
+            surf_elev = float(prof['zsurf'].iloc[j])
+        else:
+            loc = bx
+            surf_elev = np.interp(loc, d, z_s)
         if name in temp_data_dict and name in depth_dict:
             temps = temp_data_dict[name]
             depths = depth_dict[name]
-            items = sorted([
-                (float(depth), float(temps[probe]))
-                for probe, depth in depths.items()
-                if probe in temps and np.isfinite(temps[probe])
-            ])
-            if not items:
-                continue
-            depths_arr = np.array([it[0] for it in items], dtype=float)
-            temps_arr = np.array([it[1] for it in items], dtype=float)
-            
-            # Plot borehole line and sensors
-            min_elev = surf_elev - np.max(depths_arr)
-            ax.plot([loc, loc], [min_elev, surf_elev], color='k', linewidth=1.2, zorder=11)
-            for depth, temp in zip(depths_arr, temps_arr):
-                ax.plot(loc, surf_elev - depth, 'ko', markersize=4, zorder=12)
-            ax.text(loc, surf_elev + 6, name, color='red', fontsize=10, ha='center', va='bottom', zorder=13)
+            pairs = []
+            for k in depths.keys():
+                try:
+                    tval = float(temps[k] if hasattr(temps, '__getitem__') else temps.get(k))
+                except Exception:
+                    continue
+                if np.isfinite(tval):
+                    pairs.append((float(depths[k]), tval))
+            if pairs:
+                pairs.sort(key=lambda p: p[0])
+                dep = np.array([p[0] for p in pairs], float)
+                ax.plot([loc, loc], [surf_elev - dep.max(), surf_elev], color='k', lw=1.2, zorder=11)
+                for dd in dep:
+                    ax.plot(loc, surf_elev - dd, 'ko', ms=4, zorder=12)
+                ax.text(loc, surf_elev + 6, name, color='red', fontsize=10,
+                        ha='center', va='bottom', zorder=13)
 
-    # --- Setup colormap and levels ---
-    measured_vals = []
-    for name in temp_data_dict:
-        measured_vals.extend([temp for temp in temp_data_dict[name].values if np.isfinite(temp)])
-    meas_min = float(np.nanmin(measured_vals))
-    meas_max = float(np.nanmax(measured_vals))
+    # Colorbar ticks (use the same step)
+    if im is not None:
+        tick_step = step
+        tick_dec = _decimals_from_step(tick_step)
+        lo_ticks = np.floor(np.nanmin(measured_vals) / tick_step) * tick_step
+        neg_ticks = np.arange(lo_ticks, 0.0 + tick_step, tick_step)
 
-    step = 0.1
-    tick_start = np.floor(meas_min / step) * step
-    tick_end = np.ceil(meas_max / step) * step
+        ticks = list(neg_ticks)
+        if not np.isclose(ticks[-1], 0.0, atol=1e-12):
+            ticks.append(0.0)
+        ticks = [t for t in ticks if t <= 0.0 + 1e-12]
+        if any_positive:
+            ticks.append(step)
 
-    levels = np.arange(tick_start, tick_end + step/2, step)
-    if 0.0 not in levels:
-        levels = np.append(levels, 0.0)
-    levels = np.unique(np.sort(levels))
+        final_ticks, final_labels = [], []
+        seen = set()
+        for t in ticks:
+            lbl = f"{t:.{tick_dec}f}"
+            if lbl not in seen:
+                final_ticks.append(t); final_labels.append(lbl); seen.add(lbl)
 
-    cmap_use = discrete_icetemp_cmap(levels) if cmap is None else cmap
-    norm = BoundaryNorm(levels, cmap_use.N)
+        cb = fig.colorbar(im, ax=ax, label='Ice Temperature [°C]')
+        cb.set_ticks(final_ticks)
+        cb.set_ticklabels(final_labels)
 
-    # --- Plot temperature heatmap for each segment ---
-    for seg_data in all_segments_data:
-        im = ax.imshow(
-            seg_data['grid_temp'],
-            extent=[seg_data['profile_x'].min(), seg_data['profile_x'].max(), 
-                   seg_data['elev_grid'].min(), seg_data['elev_grid'].max()],
-            origin='lower',
-            aspect='auto',
-            cmap=cmap_use,
-            norm=norm,
-            alpha=0.85,
-            zorder=1
-        )
-
-        # --- Plot contours for each segment ---
-        if plot_contours:
-            ax.contour(seg_data['grid_xx'], seg_data['grid_yy'], seg_data['grid_temp'], 
-                      levels=levels, colors='k', linewidths=0.6, alpha=0.5, zorder=5)
-        
-        # Highlight 0°C isotherm
-        ax.contour(seg_data['grid_xx'], seg_data['grid_yy'], seg_data['grid_temp'],
-                  levels=[0.0], colors='red', linewidths=2.2, alpha=0.95, zorder=6)
-
-    # --- Colorbar ---
-    cb = plt.colorbar(im, ax=ax, label='Ice Temperature [°C]')
-    cb.set_ticks(levels)
-    cb.set_ticklabels([f"{v:.1f}" for v in levels])
-
-    ax.set_ylim(np.min(z_b) - 2, np.max(z_s) + 2)
+    # Axes and formatting
     ax.set_xlabel("Distance [m]")
     ax.set_ylabel("Elevation [m]")
+    ax.set_ylim(np.nanmin(z_b) - 2, np.nanmax(z_s) + 2)
     if title:
         ax.set_title(title)
-    ax.grid(True, alpha=0.3)
-
-    # Create custom legend
-    cts_handle = Line2D([0], [0], color='red', linewidth=2.2, label='CTS (0°C isotherm)')
-    handles, labels = ax.get_legend_handles_labels()
-    handles.append(cts_handle)
-    labels.append('CTS (0°C isotherm)')
-    ax.legend(handles, labels, frameon=True, fancybox=False, edgecolor='black', 
-             framealpha=1, facecolor='white', loc="upper left", ncol=1)
 
     format_plot(ax=ax, title=title, x_tick_rotation=0, legend_loc='upper left', adjust_linewidths=False)
+
+    # Legend (add CTS handle explicitly so it always appears)
+    cts_handle = Line2D([0], [0], color='red', linewidth=2.2, label='CTS (0°C isotherm)')
+    handles, labels = ax.get_legend_handles_labels()
+    dedup = {}
+    for h, l in zip(handles + [cts_handle], labels + ['CTS (0°C isotherm)']):
+        if l and l not in dedup:
+            dedup[l] = h
+    ax.legend(list(dedup.values()), list(dedup.keys()),
+              frameon=True, edgecolor='black', framealpha=1, facecolor='white',
+              loc='upper left', ncol=1)
+
     plt.tight_layout()
-    return ax.figure, ax
+    return fig, ax
