@@ -819,19 +819,34 @@ def plot_icetemp_profile(
             temps = temp_data_dict[name]
             depths = depth_dict[name]
             pairs = []
-            for k in depths.keys():
+            # Build (depth, temp) pairs
+            for k, dval in getattr(depths, 'items', lambda: depths.items())():
                 try:
                     tval = float(temps[k] if hasattr(temps, '__getitem__') else temps.get(k))
+                    dnum = float(dval)
                 except Exception:
                     continue
-                if np.isfinite(tval):
-                    pairs.append((float(depths[k]), tval))
+                if np.isfinite(tval) and np.isfinite(dnum):
+                    pairs.append((dnum, tval))
             if pairs:
                 pairs.sort(key=lambda p: p[0])
                 dep = np.array([p[0] for p in pairs], float)
+                tvals = np.array([p[1] for p in pairs], float)
+
+                # Vertical borehole line
                 ax.plot([loc, loc], [surf_elev - dep.max(), surf_elev], color='k', lw=1.2, zorder=11)
-                for dd in dep:
-                    ax.plot(loc, surf_elev - dd, 'ko', ms=4, zorder=12)
+
+                # Temperature-colored sensor markers
+                for dd, tv in zip(dep, tvals):
+                    col = cmap_use(norm(tv))
+                    ax.plot(
+                        loc, surf_elev - dd,
+                        marker='o', linestyle='None',
+                        markersize=5, markerfacecolor=col,
+                        markeredgecolor='black', markeredgewidth=0.5,
+                        zorder=12
+                    )
+                # Label
                 ax.text(loc, surf_elev + 6, name, color='red', fontsize=10,
                         ha='center', va='bottom', zorder=13)
 
