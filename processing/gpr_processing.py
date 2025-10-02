@@ -40,43 +40,53 @@ def read_thickness_txt(path):
 def read_thickness_csv(path):
     """
     Read one CSV file with GPR interpretation data.
-    Expected columns: Profile, X, Y, Depth, Elevation
+
+    Expected columns (case-insensitive):
+      - Profile, X, Y
+      - Depth      -> ice thickness (thickness)
+      - Elevation  -> bedrock elevation (zbed)
+      - Surface    -> surface elevation (zsurf) [optional]
+
     Returns a DataFrame with standardized columns:
-    ['profile','x','y','zsurf','zbed','thickness']
+      ['profile','x','y','zsurf','zbed','thickness']
     """
     df = pd.read_csv(path, engine="python")
-    
-    # Normalize column names (case insensitive)
+
+    # Normalize column names (case-insensitive)
     df.columns = [c.strip().lower() for c in df.columns]
-    
-    # Create rename mapping
-    rename_map = {
-        'profile': 'profile',
-        'x': 'x', 
-        'y': 'y',
-        'depth': 'thickness',  # Depth becomes thickness
-        'elevation': 'zsurf'   # Surface elevation
-    }
-    
+
     # Check for required columns
     required_cols = ['profile', 'x', 'y', 'depth', 'elevation']
     missing = [c for c in required_cols if c not in df.columns]
     if missing:
         raise ValueError(f"Missing columns {missing} in {path}")
-    
-    # Rename columns
-    df = df.rename(columns=rename_map)
-    
-    # Calculate bed elevation from surface - thickness
-    df['zbed'] = df['zsurf'] - df['thickness']
-    
+
+    # Standardize names
+    df = df.rename(columns={
+        'profile': 'profile',
+        'x': 'x',
+        'y': 'y',
+        'depth': 'thickness',  # Depth is ice thickness
+        'elevation': 'zbed'    # Elevation is bedrock elevation
+    })
+
+    # Surface elevation: prefer explicit 'surface' column, else compute zbed + thickness
+    if 'surface' in df.columns:
+        df['zsurf'] = pd.to_numeric(df['surface'], errors='coerce')
+    else:
+        df['zsurf'] = pd.to_numeric(df['zbed'], errors='coerce') + pd.to_numeric(df['thickness'], errors='coerce')
+
+    # Ensure numeric types
+    for c in ['x', 'y', 'zsurf', 'zbed', 'thickness']:
+        df[c] = pd.to_numeric(df[c], errors='coerce')
+
     # Keep only needed columns
     keep_cols = ['profile', 'x', 'y', 'zsurf', 'zbed', 'thickness']
     df = df[keep_cols].copy()
-    
+
     # Add source file info
     df['source'] = path
-    
+
     return df
 
 def load_points_from_txt(paths, epsg=2056, drop_duplicates=True, aggregate_duplicates='mean', return_type='gdf'):
