@@ -7,6 +7,8 @@ from scipy.ndimage import gaussian_filter1d # for smoothing
 from scipy.interpolate import Rbf
 from pykrige.ok import OrdinaryKriging
 
+from pathlib import Path
+
 # plotting
 import matplotlib.pyplot as plt
 import cmcrameri.cm as cmc
@@ -185,65 +187,60 @@ class ThermistorData:
         return df
 
     def get_ntc_data(self):
-        # Read the CSV file with the correct encoding and skip the first 5 rows
-        df = pd.read_csv(self.file_path, sep=self.delimiter, header=None, skiprows=5, 
-                    names=['Measurement', 'TIME', 'Black Probe Temperature', 'White Probe Temperature'], 
-                    encoding='latin1')
-        
-        # Convert the TIME column to datetime format
-        df['TIME'] = pd.to_datetime(df['TIME'])
-        
-        # Remove the special character (�C) from the temperature columns and convert to float
-        df['Black Probe Temperature'] = df['Black Probe Temperature'].apply(lambda x: re.sub(r'[^0-9.-]', '', x)).astype(float)
-        df['White Probe Temperature'] = df['White Probe Temperature'].apply(lambda x: re.sub(r'[^0-9.-]', '', x)).astype(float)
-        
-        # Replace -42.004 with NaN values
-        df['Black Probe Temperature'] = df['Black Probe Temperature'].replace(-42.004, np.nan)
-        df['White Probe Temperature'] = df['White Probe Temperature'].replace(-42.004, np.nan)
+            """
+            Read NTC CSVs in both legacy (5-row metadata, no header) and new (with header) formats.
+            Ensures:
+            - Columns: Measurement, TIME, Black Probe Temperature, White Probe Temperature
+            - TIME parsed to datetime
+            - Temperatures as float, sentinel -42.004 -> NaN
+            """
+            # Detect header presence by peeking first line
+            try:
+                with open(self.file_path, 'r', encoding='latin1') as f:
+                    first_line = f.readline().strip()
+            except Exception:
+                first_line = ""
 
-        return df
+            has_header = first_line.startswith("Measurement,") or first_line.startswith("Measurement;")
+
+            if has_header:
+                df = pd.read_csv(
+                    self.file_path, sep=self.delimiter, header=0, encoding='latin1'
+                )
+            else:
+                df = pd.read_csv(
+                    self.file_path, sep=self.delimiter, header=None, skiprows=5,
+                    names=['Measurement', 'TIME', 'Black Probe Temperature', 'White Probe Temperature'],
+                    encoding='latin1'
+                )
+
+            # Normalize TIME
+            df['TIME'] = pd.to_datetime(df['TIME'], errors='coerce')
+
+            # Normalize temperature columns to float
+            for col in ['Black Probe Temperature', 'White Probe Temperature']:
+                if col in df.columns:
+                    if df[col].dtype == object:
+                        df[col] = df[col].apply(lambda x: re.sub(r'[^0-9.-]', '', str(x))).astype(float)
+                    else:
+                        df[col] = pd.to_numeric(df[col], errors='coerce')
+
+            # Replace error sentinel
+            df['Black Probe Temperature'] = df['Black Probe Temperature'].replace(-42.004, np.nan)
+            df['White Probe Temperature'] = df['White Probe Temperature'].replace(-42.004, np.nan)
+
+            return df
 
     def get_ntc_data_with_offsets(self, logger_id, offsets_df, snapshot_day=None, aggregate=None):
         """
         Get NTC data with offset correction and optional aggregation.
-
-        Parameters:
-        - logger_id: value to match in offsets_df['Logger'] (matched as string).
-        - offsets_df: DataFrame with columns ['Logger','Black Probe Offset','White Probe Offset'].
-        - snapshot_day: date-like string for selecting day/month/year when aggregating.
-            Accepts 'YYYYMMDD', 'YYYY-MM-DD', 'DD.MM.YYYY' (time part allowed; ignored).
-        - aggregate: None | 'daily' | 'monthly' | 'annual' | 'all'
-            • None: no aggregation. If snapshot_day is given -> return all rows for that day,
-                else return the full (offset-corrected) time series.
-            • 'daily': mean of that day (requires snapshot_day).
-            • 'monthly': mean for the month of snapshot_day (requires snapshot_day).
-            • 'annual': mean for the year of snapshot_day (requires snapshot_day).
-            • 'all': mean across the entire dataset (ignores snapshot_day).
-
-        Returns:
-        - If aggregated: single-row DataFrame with columns
-            ['Measurement','TIME','Black Probe Temperature','White Probe Temperature'].
-            TIME is set to a representative timestamp (noon/mid-month/mid-year/center of data).
-        - Otherwise: offset-corrected time series (optionally filtered to snapshot_day).
+        Auto-detects both legacy and new CSV formats (delegates to get_ntc_data()).
         """
         import pandas as pd
         import numpy as np
 
-        # Read raw file
-        df = pd.read_csv(
-            self.file_path, sep=self.delimiter, header=None, skiprows=5,
-            names=['Measurement', 'TIME', 'Black Probe Temperature', 'White Probe Temperature'],
-            encoding='latin1'
-        )
-        df['TIME'] = pd.to_datetime(df['TIME'])
-
-        # Clean temperature strings to floats
-        df['Black Probe Temperature'] = df['Black Probe Temperature'].apply(lambda x: re.sub(r'[^0-9.-]', '', str(x))).astype(float)
-        df['White Probe Temperature'] = df['White Probe Temperature'].apply(lambda x: re.sub(r'[^0-9.-]', '', str(x))).astype(float)
-
-        # Replace error sentinel
-        df['Black Probe Temperature'] = df['Black Probe Temperature'].replace(-42.004, np.nan)
-        df['White Probe Temperature'] = df['White Probe Temperature'].replace(-42.004, np.nan)
+        # Read raw data using the robust reader
+        df = self.get_ntc_data()
 
         # Find offsets (robust match as string)
         off = offsets_df.copy()
@@ -322,19 +319,14 @@ class ThermistorData:
 
     def get_multiple_ntc_data(self):
         """
-        Reads NTC data for all file paths in self.file_paths.
+        Reads NTC data for all file paths in self.file_paths using get_ntc_data() for
+        robust handling of both legacy and new formats.
         Returns a list of DataFrames, one per borehole.
         """
         ntc_data_list = []
         for fp in self.file_paths:
-            df = pd.read_csv(fp, sep=self.delimiter, header=None, skiprows=5, 
-                                names=['Measurement', 'TIME', 'Black Probe Temperature', 'White Probe Temperature'], 
-                                encoding='latin1')
-            df['TIME'] = pd.to_datetime(df['TIME'])
-            df['Black Probe Temperature'] = df['Black Probe Temperature'].apply(lambda x: re.sub(r'[^0-9.-]', '', str(x))).astype(float)
-            df['White Probe Temperature'] = df['White Probe Temperature'].apply(lambda x: re.sub(r'[^0-9.-]', '', str(x))).astype(float)
-            df['Black Probe Temperature'] = df['Black Probe Temperature'].replace(-42.004, np.nan)
-            df['White Probe Temperature'] = df['White Probe Temperature'].replace(-42.004, np.nan)
+            t = ThermistorData(fp, self.delimiter, self.measurement_depth)
+            df = t.get_ntc_data()
             ntc_data_list.append(df)
         return ntc_data_list
 
@@ -409,19 +401,14 @@ class ThermistorDataPlotter:
         data = thermistor.get_chain_data_with_offsets(start_time, end_time, offsets)
         data['TIME'] = pd.to_datetime(data['TIME'])
 
-        # Load depths if provided
+        # Load depths if provided (use the same robust parser as elsewhere)
         depths = {}
         if depth_file is not None:
-            df_depths = pd.read_csv(depth_file, sep=';', header=0)
-            df_depths = df_depths[df_depths.iloc[:,0].astype(str).str.startswith('#')]
-            last_col = df_depths.columns[5]
-            for _, row in df_depths.iterrows():
-                thermistor_name = row.iloc[0]
-                try:
-                    depth = float(str(row[last_col]).replace(',', '.'))
-                except:
-                    depth = None
-                depths[thermistor_name] = depth
+            try:
+                depths = read_thermistor_depths(depth_file)  # returns dict like {'#1': 5.3, ...}
+            except Exception as e:
+                print(f"Warning: failed to read depths from {depth_file}: {e}")
+                depths = {}
 
         plt.figure(figsize=(12, 8),dpi=250)
         exclude_cols = ['NO', 'TIME', 'TEMP LOGGER', 'TEMP BATTERY', 'HK-BAT:V']
@@ -430,9 +417,10 @@ class ThermistorDataPlotter:
         colors = cmc.batlow(np.linspace(1, 0, n_cols))
 
         for i, column in enumerate(plot_columns):
-            depth = depths.get(column, None)
-            label = f"{depth:.1f} m" if depth is not None else ""
-            plt.plot(data['TIME'], data[column], label=label, color=colors[i])
+            depth_val = depths.get(column, None)
+            # Label with depth if available
+            label = f"{depth_val:.1f} m" if isinstance(depth_val, (int, float)) and depth_val is not None else ""
+            plt.plot(data['TIME'], pd.to_numeric(data[column], errors='coerce'), label=label, color=colors[i])
 
         # Use the format_plot method for consistent styling
         plt.xlabel('Time')
@@ -445,102 +433,102 @@ class ThermistorDataPlotter:
     def plot_temperature_profile(self, snapshot_time, offsets, depth_file, savepath, title=None):
         """
         Plot a single chain's temperature profile as the DAILY MEAN for snapshot_time.
-
-        snapshot_time accepts:
-          - '20250808'
-          - '2025-08-08'
-          - '08.08.2025'
-          - '08.08.2025 13:00:00' (time ignored)
+        Depths are loaded via read_thermistor_depths for consistency.
         """
-        # Use get_chain_data_with_offsets with snapshot_day argument
         thermistor = ThermistorData(self.file_path, self.delimiter, self.measurement_depth)
-        data = thermistor.get_chain_data_with_offsets(offsets=offsets, snapshot_day=snapshot_time)
+        day_df = thermistor.get_chain_data_with_offsets(offsets=offsets, snapshot_day=snapshot_time)
+        if day_df is None or day_df.empty:
+            raise ValueError("No chain data available for the requested day.")
 
-        # Load depths
-        df_depths = pd.read_csv(depth_file, sep=';', header=0)
-        df_depths = df_depths[df_depths.iloc[:,0].astype(str).str.startswith('#')]
-        depth_col_candidates = [col for col in df_depths.columns if 'depth' in col.lower() and '[m]' in col.lower()]
-        depth_col = depth_col_candidates[0] if depth_col_candidates else df_depths.columns[-1]
+        # Parse depths consistently
+        try:
+            depths_dict = read_thermistor_depths(depth_file)  # e.g., {'#1': 5.3, ...}
+        except Exception as e:
+            raise ValueError(f"Failed to read depths from {depth_file}: {e}")
 
-        depths = []
-        mean_temps = []
-        exclude_cols = ['NO', 'TIME', 'TEMP LOGGER', 'TEMP BATTERY', 'HK-BAT:V']
+        # Compute daily mean per thermistor using the depth keys
+        exclude_cols = {'NO', 'TIME', 'TEMP LOGGER', 'TEMP BATTERY', 'HK-BAT:V'}
+        depths_list, mean_temps = [], []
+        for sensor, depth in depths_dict.items():
+            if depth is None:
+                continue
+            if sensor in day_df.columns and sensor not in exclude_cols:
+                series = pd.to_numeric(day_df[sensor], errors='coerce')
+                m = series.mean(skipna=True)
+                if np.isfinite(m):
+                    depths_list.append(float(depth))
+                    mean_temps.append(float(m))
 
-        if not data.empty:
-            for _, row in df_depths.iterrows():
-                thermistor_name = row.iloc[0]
-                try:
-                    depth = float(str(row[depth_col]).replace(',', '.'))
-                except Exception:
-                    continue
-                if thermistor_name in data.columns and thermistor_name not in exclude_cols:
-                    series = pd.to_numeric(data[thermistor_name], errors='coerce')
-                    m = series.mean(skipna=True)
-                    if not np.isnan(m):
-                        depths.append(depth)
-                        mean_temps.append(m)
+        if len(depths_list) == 0:
+            raise ValueError("No matching thermistor columns found in data for the provided depth file.")
 
-        if depths and mean_temps:
-            depths, mean_temps = zip(*sorted(zip(depths, mean_temps)))
+        # Sort by depth
+        depths_arr, temps_arr = zip(*sorted(zip(depths_list, mean_temps)))
 
-        plt.figure(figsize=(2.5,4), dpi=250)
-        plt.plot(mean_temps, depths, 'o-', color='k', label='Daily mean')
+        plt.figure(figsize=(2.5, 4), dpi=250)
+        plt.plot(temps_arr, depths_arr, 'o-', color='k', label='Daily mean')
         plt.gca().invert_yaxis()
         plt.xlabel('Ice Temperature [°C]')
         plt.ylabel('Depth [m]')
-        # Format the day for the title
+
+        # Title day formatting
         day = pd.to_datetime(snapshot_time, dayfirst=True, errors='coerce')
         if pd.isna(day):
             day = pd.to_datetime(str(snapshot_time), format='%Y%m%d', errors='coerce')
-        if pd.isna(day):
-            day_str = str(snapshot_time)
-        else:
-            day_str = day.strftime('%Y-%m-%d')
+        day_str = day.strftime('%Y-%m-%d') if not pd.isna(day) else str(snapshot_time)
         plot_title = f"{title if title else 'Temperature Profile'} — {day_str}"
         plt.title(plot_title)
+        plt.axvline(x=0, color='k', linestyle='--')
         plt.tight_layout()
         self.format_plot(plot_title)
-        plt.axvline(x=0, color='k', linestyle='--')
         plt.savefig(savepath)
 
     def plot_multiple_temperature_profiles(self, snapshot_time, offsets_list, depth_files, labels=None, savepath=None, title=None, ntc_data_list=None):
         """
-        Plot temperature profiles for all chains and optional TT/NTC boreholes as DAILY MEANS.
+        Plot temperature profiles for multiple GeoPrecision chains and optional TT/NTC boreholes.
 
-        snapshot_time: day selector for averaging. Accepts formats like:
-            - '20250808'
-            - '2025-08-08'
-            - '08.08.2025'
-            - '08.08.2025 13:00:00' (time is ignored; date is used)
-        For TT/NTC boreholes, pass combined 1-row DataFrames (already averaged/corrected)
-        via ntc_data_list.
+        Depth loading logic:
+        - For chains: read_thermistor_depths(depth_files[:n_profiles])
+        - For NTC:   read_thermistor_depths(depth_files[n_profiles:n_profiles+n_ntc])
+                     matching ntc_data_list order.
+
+        ntc_data_list: list of 1-row DataFrames per borehole with columns:
+            ['Measurement','TIME','Black Probe Temperature','White Probe Temperature'].
         """
         # Parse provided snapshot_time to a day (EU dates supported)
         day = pd.to_datetime(snapshot_time, dayfirst=True, errors='coerce')
         if pd.isna(day):
-            # Try compact format like 20250808
             day = pd.to_datetime(str(snapshot_time), format='%Y%m%d', errors='coerce')
         if pd.isna(day):
             raise ValueError(f"Could not parse snapshot_time: {snapshot_time}")
         day = day.normalize()
 
-        plt.figure(figsize=(2.5, 4), dpi=250)
+        plt.figure(figsize=(3, 4), dpi=250)
         n_profiles = len(self.file_paths)
         n_ntc = len(ntc_data_list) if ntc_data_list is not None else 0
-        total_profiles = n_profiles + n_ntc
+        total_series = n_profiles + n_ntc
 
-        # Colors for all series (chains + optional TT/NTC)
-        all_colors = cmc.batlow(np.linspace(0, 1, total_profiles if total_profiles > 0 else 1))
+        # Colors for all series (one color per borehole profile line)
+        all_colors = cmc.batlow(np.linspace(0, 1, max(total_series, 1)))
+
+        # Default labels if not provided
         if labels is None:
-            labels = [f'Profile {i+1}' for i in range(n_profiles)]
+            labels = [f'Chain {i+1}' for i in range(n_profiles)]
+            labels += [f'NTC {j+1}' for j in range(n_ntc)]
+
+        # Safety on depth_files length
+        if len(depth_files) < total_series:
+            print(f"Warning: depth_files has {len(depth_files)} entries, but {total_series} needed (chains + NTC).")
 
         # Plot chain profiles as daily means
-        for i, (fp, offs, dfile, label) in enumerate(zip(self.file_paths, offsets_list, depth_files[:n_profiles], labels)):
-            # Read depths
-            df_depths = pd.read_csv(dfile, sep=';', header=0)
-            df_depths = df_depths[df_depths.iloc[:, 0].astype(str).str.match(r'#\d+')]
-            depth_col_candidates = [col for col in df_depths.columns if 'depth' in col.lower() and '[m]' in col.lower()]
-            depth_col = depth_col_candidates[0] if depth_col_candidates else df_depths.columns[-1]
+        exclude_cols = {'NO', 'TIME', 'TEMP LOGGER', 'TEMP BATTERY', 'HK-BAT:V'}
+        for i, (fp, offs, dfile, label) in enumerate(zip(self.file_paths, offsets_list, depth_files[:n_profiles], labels[:n_profiles])):
+            # Read depths consistently
+            try:
+                depths_dict = read_thermistor_depths(dfile)  # {'#1': 5.3, ...}
+            except Exception as e:
+                print(f"Warning: failed to read depths for chain {fp}: {e}")
+                continue
 
             # Read chain data for the snapshot day and apply offsets
             thermistor = ThermistorData(fp, self.delimiter, self.measurement_depth)
@@ -548,39 +536,62 @@ class ThermistorDataPlotter:
             if day_df.empty:
                 continue
 
-            exclude_cols = ['NO', 'TIME', 'TEMP LOGGER', 'TEMP BATTERY', 'HK-BAT:V']
-            # Compute daily mean per thermistor
+            # Compute daily mean per thermistor using depth keys
             depths, temps = [], []
-            for _, row in df_depths.iterrows():
-                thermistor_name = row.iloc[0]
-                try:
-                    depth = float(str(row[depth_col]).replace(',', '.'))
-                except Exception:
+            for sensor, depth in depths_dict.items():
+                if depth is None:
                     continue
-                if thermistor_name in day_df.columns and thermistor_name not in exclude_cols:
-                    series = pd.to_numeric(day_df[thermistor_name], errors='coerce')
+                if sensor in day_df.columns and sensor not in exclude_cols:
+                    series = pd.to_numeric(day_df[sensor], errors='coerce')
                     mean_temp = series.mean(skipna=True)
-                    if not np.isnan(mean_temp):
-                        depths.append(depth)
-                        temps.append(mean_temp)
+                    if np.isfinite(mean_temp):
+                        depths.append(float(depth))
+                        temps.append(float(mean_temp))
 
             if depths and temps:
                 depths, temps = zip(*sorted(zip(depths, temps)))
                 plt.plot(temps, depths, 'o-', label=label, color=all_colors[i], linewidth=3)
 
-        # Plot TT/NTC borehole data (already averaged and corrected)
-        if ntc_data_list is not None and len(ntc_data_list) > 0:
-            for j, (ntc_df, label) in enumerate(zip(ntc_data_list, labels[n_profiles:])):
+        # Plot TT/NTC borehole data (already averaged; use given temps and depths from depth files)
+        if n_ntc > 0:
+            ntc_depth_files = depth_files[n_profiles:n_profiles + n_ntc]
+            for j, (ntc_df, dfile, label) in enumerate(zip(ntc_data_list, ntc_depth_files, labels[n_profiles:])):
                 color_idx = n_profiles + j
-                tynitag_temps = [
-                    ntc_df['Black Probe Temperature (corrected)'].iloc[0],
-                    ntc_df['White Probe Temperature (corrected)'].iloc[0]
-                ]
-                tynitag_depths = [
-                    ntc_df['depth black probe [m]'].iloc[0],
-                    ntc_df['depth white probe [m]'].iloc[0]
-                ]
-                plt.plot(tynitag_temps, tynitag_depths, 'o-', label=label, color=all_colors[color_idx], alpha=0.85)
+
+                # Depths for NTC: read from depth file (expects 'white probe' and 'black probe')
+                try:
+                    depths_dict = read_thermistor_depths(dfile)
+                except Exception as e:
+                    print(f"Warning: failed to read depths for NTC ({label}): {e}")
+                    continue
+
+                # Case-insensitive lookup
+                dd_lower = {str(k).lower(): v for k, v in depths_dict.items()}
+                depth_white = dd_lower.get('white probe', None)
+                depth_black = dd_lower.get('black probe', None)
+
+                if ntc_df is None or ntc_df.empty:
+                    continue
+
+                # Extract temps (already averaged or single-row snapshot)
+                try:
+                    t_white = float(ntc_df['White Probe Temperature'].iloc[0])
+                    t_black = float(ntc_df['Black Probe Temperature'].iloc[0])
+                except Exception as e:
+                    print(f"Warning: missing NTC temperature columns for {label}: {e}")
+                    continue
+
+                temps_ntc, depths_ntc = [], []
+                if depth_white is not None and np.isfinite(t_white):
+                    temps_ntc.append(t_white); depths_ntc.append(float(depth_white))
+                if depth_black is not None and np.isfinite(t_black):
+                    temps_ntc.append(t_black); depths_ntc.append(float(depth_black))
+
+                if len(temps_ntc) >= 1:
+                    # Sort by depth to draw a clean line between probes
+                    if len(temps_ntc) > 1:
+                        depths_ntc, temps_ntc = zip(*sorted(zip(depths_ntc, temps_ntc)))
+                    plt.plot(temps_ntc, depths_ntc, 'o-', label=label, color=all_colors[color_idx], alpha=0.9, linewidth=2)
 
         plt.gca().invert_yaxis()
         plt.xlabel('Ice Temperature [°C]')
@@ -682,7 +693,6 @@ class ThermistorDataPlotter:
         fig_height = fig_width / fig_ratio
 
         fig = plt.figure(figsize=(12, 7), dpi=300)
-        fig.patch.set_facecolor('#f3f2f2ff')  # Set the background color of the entire figure
 
         # Define complementary color palettes for each borehole
         colors_borehole1 = plt.cm.Reds(np.linspace(0.3, 1, len(depths)))
@@ -735,10 +745,17 @@ class ThermistorDataPlotter:
         plt.xlabel('Time')
         plt.ylabel('Temperature [°C]')
         plt.ylim(lower_y_limit, 0.4)
+        plt.axhline(y=0, color='k', linestyle='--')  # Add a dashed line at 0°C
         plt.axvline(deployment_date, color='gray', linestyle='solid', linewidth=4)
         plt.text(deployment_date, plt.ylim()[0], 'Deployment', color='gray', fontsize=22, verticalalignment='top', horizontalalignment='right', rotation=45)
-        plt.gca().xaxis.set_major_formatter(mdates.DateFormatter('%b %Y'))
-        plt.gca().xaxis.set_major_locator(mdates.MonthLocator())  # Set x-ticks to be at the start of each month
+        ax = plt.gca()
+        # Option A: auto ticks, target 5–8 labels
+        locator = mdates.AutoDateLocator(minticks=8, maxticks=11)
+        ax.xaxis.set_major_locator(locator)
+        ax.xaxis.set_major_formatter(mdates.ConciseDateFormatter(locator))
+        # Option B (fixed): uncomment to show every 2 months
+        # ax.xaxis.set_major_locator(mdates.MonthLocator(interval=2))
+        # ax.xaxis.set_major_formatter(mdates.DateFormatter('%b %Y'))
 
         # format the plot
         self.format_plot(title, legend_loc)
@@ -806,18 +823,6 @@ class ThermistorDataPlotter:
 
 
 # Other helpful processing functions can be added here
-
-def read_tynitag_depth_file(depth_file):
-    """
-    Reads a Tynitag depth file and returns a DataFrame with columns:
-    ['date', 'depth white probe [m]', 'depth black probe [m]']
-    """
-    df = pd.read_csv(depth_file, sep=';', header=6)
-    # Replace comma with dot and convert to float for depth columns
-    df['depth black probe [m]'] = df['depth black probe [m]'].astype(str).str.replace(',', '.').astype(float)
-    df['depth white probe [m]'] = df['depth white probe [m]'].astype(str).str.replace(',', '.').astype(float)
-    # Only keep relevant columns
-    return df[['date', 'depth black probe [m]', 'depth white probe [m]']]
 
 def combine_tynitag_data(depths_df, snapshot_df, offsets_df=None):
     """
@@ -901,7 +906,7 @@ def read_thermistor_depths(depth_file):
     import pandas as pd
 
     # Read the file, skipping the header row
-    df = pd.read_csv(depth_file, sep=';', header=0)
+    df = pd.read_csv(depth_file, sep=',', header=0)
 
     # Find columns with "depth" in name that have actual data for thermistor rows
     thermistor_mask = (
@@ -1400,3 +1405,37 @@ def create_temp_depth_dicts(thermistor_data_dict, depth_data_dict):
             print(f"  {sensor}: {temp:.3f}°C at {depth} m")
     
     return temp_data_dict, depth_dict
+
+def splice_timeseries(dfs, time_col="TIME", out_path=None, file_stem=None):
+    # Normalize TIME
+    normed = []
+    for i, df in enumerate(dfs):
+        dfx = df.copy()
+        dfx[time_col] = pd.to_datetime(dfx[time_col])
+        dfx["__chunk__"] = i  # to prefer later chunks on duplicates
+        normed.append(dfx)
+
+    # Concatenate and resolve overlaps (keep last chunk on duplicate TIME)
+    out = pd.concat(normed, ignore_index=True)
+    out = out.sort_values([time_col, "__chunk__"])
+    out = out.drop_duplicates(subset=[time_col], keep="last").drop(columns="__chunk__")
+
+    # Re-number Measurement
+    if "Measurement" in out.columns:
+        out = out.sort_values(time_col).reset_index(drop=True)
+        out["Measurement"] = range(1, len(out) + 1)
+
+    # Optional continuity check (hourly expected)
+    gaps = out[time_col].sort_values().diff().dropna()
+    big_gaps = gaps[gaps > pd.Timedelta(hours=1)]
+    if not big_gaps.empty:
+        print(f"Warning: found {len(big_gaps)} gaps > 1 hour")
+
+    # Save
+    if out_path is not None:
+        out_path = Path(out_path)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        if file_stem is None:
+            file_stem = "spliced"
+        out.to_csv(out_path.with_name(f"{file_stem}.csv"), index=False)
+    return out
