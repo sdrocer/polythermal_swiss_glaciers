@@ -420,41 +420,71 @@ def load_borehole_positions(
     case_insensitive: bool = True
 ):
     """
-    Read a semicolon CSV with columns Name;Date;X;Y (Swiss-style decimal commas).
-    Always returns ONLY the most recent measured coordinates per Name.
-    Optional filtering by keep_names.
-
-    Returns:
-        - boreholes_gdf: GeoDataFrame with ['name','date','x','y','geometry'] in EPSG:epsg
-                         (latest measured per name only)
-        - unmeasured_df: DataFrame of names that have no measured coordinates
-                         (limited to keep_names when provided). Also includes
-                         rows with status='not_found' for requested names that
-                         do not exist in the CSV.
+    Read the new borehole CSV (comma-separated) with columns like:
+      number,name,date,X,Y,borehole depth (m),chaing/logger,chain length [m]
+    - Ignores empty/comment rows (starting with '*')
+    - Parses mixed date formats (dd/mm/yyyy, dd.mm.yyyy, etc.)
+    - Returns only the most recent entry per name
+    - Adds extra columns when available: depth_m, chain_logger, chain_length_m
     """
-    # Read as strings to clean manually
-    df = pd.read_csv(path, sep=';', engine='python', dtype=str, encoding='utf-8', skip_blank_lines=True)
-    # Normalize columns (case-insensitive)
-    cols = {c.lower().strip(): c for c in df.columns}
-    for need in ('name', 'date', 'x', 'y'):
-        if need not in cols:
-            raise ValueError(f"Missing column '{need}' in {path}")
-    df = df[[cols['name'], cols['date'], cols['x'], cols['y']]].rename(
-        columns={cols['name']: 'name', cols['date']: 'date', cols['x']: 'x', cols['y']: 'y'}
-    )
-    # Drop comment/footnote rows and empty names
+    # Read as strings; keep rows for our own cleaning
+    df = pd.read_csv(path, sep=',', engine='python', dtype=str, skip_blank_lines=True)
+    # Drop fully empty rows
+    df = df.dropna(how='all')
+
+    # Normalize headers
+    orig_cols = list(df.columns)
+    lower = {c.lower().strip(): c for c in df.columns}
+
+    def find_col(*keys, default=None):
+        for k in keys:
+            if k in lower:
+                return lower[k]
+        # fuzzy search
+        for lc, oc in lower.items():
+            if any(all(t in lc for t in k.split()) for k in keys):
+                return oc
+        return default
+
+    col_name = find_col('name')
+    col_date = find_col('date')
+    col_x = find_col('x')
+    col_y = find_col('y')
+    col_depth = find_col('borehole depth (m)', 'borehole depth', 'depth (m)', 'depth')
+    col_chain_logger = find_col('chain/logger', 'chaing/logger', 'logger', 'chain id')
+    col_chain_len = find_col('chain length [m]', 'chain length', 'length [m]')
+
+    needed = [col_name, col_date, col_x, col_y]
+    if any(c is None for c in needed):
+        raise ValueError(f"Missing required columns in {path}. Found columns: {orig_cols}")
+
+    df = df[[c for c in [col_name, col_date, col_x, col_y, col_depth, col_chain_logger, col_chain_len] if c in df.columns]].copy()
+    df = df.rename(columns={
+        col_name: 'name', col_date: 'date', col_x: 'x', col_y: 'y',
+        **({col_depth: 'depth_m'} if col_depth else {}),
+        **({col_chain_logger: 'chain_logger'} if col_chain_logger else {}),
+        **({col_chain_len: 'chain_length_m'} if col_chain_len else {})
+    })
+
+    # Clean names and drop comment/asterisk rows
     df['name'] = df['name'].astype(str).str.strip()
     df = df[df['name'].notna() & (df['name'] != '') & ~df['name'].str.startswith('*')]
 
-    # Parse date (dd.mm.yy -> 20yy)
-    df['date_parsed'] = pd.to_datetime(df['date'].astype(str).str.strip(),
-                                       format='%d.%m.%y', dayfirst=True, errors='coerce')
+    # Parse dates (robust: dd/mm/yyyy, dd.mm.yyyy, etc.)
+    df['date_parsed'] = pd.to_datetime(df['date'].astype(str).str.strip().str.replace('\\.', '/', regex=True),
+                                       dayfirst=True, errors='coerce')
 
+    # Numeric conversions
     df['x_num'] = df['x'].apply(_to_float)
     df['y_num'] = df['y'].apply(_to_float)
+    if 'depth_m' in df.columns:
+        df['depth_m'] = df['depth_m'].apply(_to_float)
+    if 'chain_length_m' in df.columns:
+        df['chain_length_m'] = df['chain_length_m'].apply(_to_float)
+
     df['measured'] = df['x_num'].notna() & df['y_num'].notna()
 
-    # Optional name filtering (case-insensitive)
+    # Optional name filter
     wanted = None
     if keep_names:
         keep = [str(n).strip() for n in keep_names if str(n).strip()]
@@ -468,23 +498,23 @@ def load_borehole_positions(
     else:
         df['_key'] = df['name']
 
-    # Latest measured per Name
+    # Keep latest measured entry per name
     measured = df[df['measured']].copy()
     if not measured.empty:
         measured = (measured
                     .sort_values(['name', 'date_parsed', 'date'])
                     .groupby('name', as_index=False, sort=False)
                     .tail(1))
-    latest_measured_names = set(measured['name']) if not measured.empty else set()
 
-    # Names with no measured coords at all -> keep their latest row for info
-    unmeasured = (df[~df['name'].isin(latest_measured_names)]
+    latest_names = set(measured['name']) if not measured.empty else set()
+
+    # Unmeasured or missing requested names (for info)
+    unmeasured = (df[~df['name'].isin(latest_names)]
                     .sort_values(['name', 'date_parsed', 'date'])
                     .groupby('name', as_index=False, sort=False)
                     .tail(1)
-                    .drop(columns=['x_num', 'y_num', 'measured']))
+                    .drop(columns=['x_num', 'y_num', 'measured'], errors='ignore'))
 
-    # Add requested names not present at all
     if keep_names and wanted is not None:
         have_keys = set(df['_key'].unique())
         missing_keys = sorted(list(wanted - have_keys))
@@ -496,24 +526,30 @@ def load_borehole_positions(
             unmeasured = (pd.concat([unmeasured, extra], ignore_index=True)
                             .sort_values(['name', 'date'], na_position='last'))
 
-    # Clean helper column
-    df = df.drop(columns=['_key'])
-
-    # Build GeoDataFrame
+    # Build GeoDataFrame for measured
     if measured.empty:
         boreholes_gdf = gpd.GeoDataFrame(columns=['name','date','x','y','geometry'], crs=f"EPSG:{epsg}")
     else:
+        cols_keep = ['name', 'date', 'x', 'y']
+        for extra in ('depth_m', 'chain_logger', 'chain_length_m'):
+            if extra in measured.columns:
+                cols_keep.append(extra)
         boreholes_gdf = gpd.GeoDataFrame(
-            measured.rename(columns={'x_num':'x', 'y_num':'y'})[['name','date','x','y']],
+            measured.rename(columns={'x_num':'x', 'y_num':'y'})[cols_keep].assign(
+                x=measured['x_num'].values, y=measured['y_num'].values
+            ),
             geometry=[Point(xy) for xy in zip(measured['x_num'], measured['y_num'])],
             crs=f"EPSG:{epsg}"
         )
-        # Overwrite x and y with geometry values to ensure consistency
+        # Ensure consistency
         boreholes_gdf['x'] = boreholes_gdf.geometry.x
         boreholes_gdf['y'] = boreholes_gdf.geometry.y
-
-        # Enforce no duplicate columns
         boreholes_gdf = boreholes_gdf.loc[:, ~boreholes_gdf.columns.duplicated()]
+
+    # Cleanup helper col
+    for c in ('_key',):
+        if c in df.columns:
+            df = df.drop(columns=[c])
 
     return boreholes_gdf, unmeasured
     
