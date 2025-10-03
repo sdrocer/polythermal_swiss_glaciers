@@ -894,82 +894,135 @@ def ntc_daily_snapshot(df, day_str):
         'White Probe Temperature': [avg_white]
     })
 
-def read_thermistor_depths(depth_file):
+def read_thermistor_depths(depth_file, when=None):
     """
-    Reads a thermistor depth file and returns a dictionary mapping thermistor identifier to its current measurement depth (in meters).
-    Handles two formats:
-    1. Standard format: #1, #2, #3, ... (returns as '#1', '#2', etc.)
-    2. Tynitag format: white probe, black probe (returns as 'white probe', 'black probe')
-    Always uses the last column that contains actual data (not empty).
-    Handles European decimal format (comma as decimal separator).
+    Read a thermistor depth file and return a dictionary of current measurement depths (m).
+
+    Supported formats:
+    1) GeoPrecision chain list (rows '#1', '#2', ... with a 'depth' column).
+       Returns: {'#1': 5.3, '#2': 6.8, ...}
+    2) New TinyTag format (columns per probe):
+         date,cummulative surface melt (m ice),borehole depth [m],
+         depth black probe [m],depth white probe [m],...
+       Returns: {'white probe': 7.81, 'black probe': 12.81}
+       The row selected is the one closest to 'when' (if provided) or the last valid row.
+
+    Parameters
+    ----------
+    depth_file : str
+    when : str | pandas.Timestamp | None
+        Optional date to select the closest entry. Accepts 'YYYYMMDD', 'YYYY-MM-DD', 'DD.MM.YYYY', etc.
     """
     import pandas as pd
+    import numpy as np
 
-    # Read the file, skipping the header row
+    def _to_float(x):
+        if pd.isna(x):
+            return np.nan
+        s = str(x).strip().replace(',', '.')
+        # keep digits, sign, decimal point
+        m = re.findall(r'[-+]?\d*\.?\d+(?:[eE][-+]?\d+)?', s)
+        return float(m[0]) if m else np.nan
+
+    # Load as-is
     df = pd.read_csv(depth_file, sep=',', header=0)
 
-    # Find columns with "depth" in name that have actual data for thermistor rows
+    # Normalize column names
+    colmap = {str(c).strip().lower(): c for c in df.columns}
+
+    def _col(*names):
+        for n in names:
+            if n in colmap:
+                return colmap[n]
+        # loose match
+        for k, v in colmap.items():
+            if any(n in k for n in names):
+                return v
+        return None
+
+    # Detect new TinyTag format (columns per probe)
+    c_white = _col('depth white probe', 'white probe depth')
+    c_black = _col('depth black probe', 'black probe depth')
+    c_date  = _col('date')
+    if c_white or c_black:
+        df2 = df.copy()
+
+        # Parse date if present
+        if c_date:
+            # make '.' also work
+            dates = pd.to_datetime(df2[c_date].astype(str).str.replace('.', '/', regex=False),
+                                   dayfirst=True, errors='coerce')
+            df2['_date'] = dates
+        else:
+            df2['_date'] = pd.NaT
+
+        # Choose row: closest to 'when' if provided, else last row with at least one depth
+        if when is not None and c_date:
+            when_dt = pd.to_datetime(str(when), dayfirst=True, errors='coerce')
+            if pd.isna(when_dt):
+                # try compact yyyymmdd
+                when_dt = pd.to_datetime(str(when), format='%Y%m%d', errors='coerce')
+            if not pd.isna(when_dt) and df2['_date'].notna().any():
+                idx = (df2['_date'] - when_dt).abs().idxmin()
+                row = df2.loc[idx]
+            else:
+                row = df2.iloc[-1]
+        else:
+            # last row with any valid depth, otherwise last row
+            mask_valid = pd.Series(False, index=df2.index)
+            for c in [c_white, c_black]:
+                if c:
+                    mask_valid |= df2[c].apply(_to_float).notna()
+            if mask_valid.any():
+                row = df2.loc[mask_valid].iloc[-1]
+            else:
+                row = df2.iloc[-1]
+
+        depths = {}
+        if c_white:
+            val = _to_float(row[c_white])
+            if np.isfinite(val):
+                depths['white probe'] = float(val)
+        if c_black:
+            val = _to_float(row[c_black])
+            if np.isfinite(val):
+                depths['black probe'] = float(val)
+
+        if not depths:
+            raise ValueError(f"No valid probe depths found in {depth_file}")
+        return depths
+
+    # Fallback: legacy chain table with rows '#1', '#2', ... and a depth column
+    # Identify thermistor rows
+    first_col = df.columns[0]
     thermistor_mask = (
-        df[df.columns[0]].astype(str).str.startswith('#') |
-        df[df.columns[0]].astype(str).str.contains('probe', case=False, na=False)
+        df[first_col].astype(str).str.startswith('#') |
+        df[first_col].astype(str).str.contains('probe', case=False, na=False)
     )
-    
+
+    # Find a numeric depth column by scanning from the right
     depth_col = None
     for col in reversed(df.columns):
-        if 'depth' in str(col).lower() and col != df.columns[0]:
-            # Check if this column has actual numeric data for thermistor rows
-            test_data = df[thermistor_mask][col].dropna()
-            if len(test_data) > 0:
-                # Try converting one value to verify it's numeric
-                try:
-                    test_val = str(test_data.iloc[0]).strip().replace(',', '.')
-                    if test_val not in ['', 'nan', 'none']:
-                        float(test_val)
-                        depth_col = col
-                        break
-                except:
-                    continue
-    
-    # Fallback to last non-empty column if no depth column works
-    if depth_col is None:
-        for col in reversed(df.columns):
-            if not df[col].isna().all() and col != df.columns[0]:
-                test_data = df[thermistor_mask][col].dropna()
-                if len(test_data) > 0:
-                    try:
-                        test_val = str(test_data.iloc[0]).strip().replace(',', '.')
-                        if test_val not in ['', 'nan', 'none']:
-                            float(test_val)
-                            depth_col = col
-                            break
-                    except:
-                        continue
-    
+        if col == first_col:
+            continue
+        series = df.loc[thermistor_mask, col].dropna()
+        if series.empty:
+            continue
+        try:
+            test = _to_float(series.iloc[0])
+            if np.isfinite(test):
+                depth_col = col
+                break
+        except Exception:
+            continue
     if depth_col is None:
         raise ValueError("No data column found with actual depth values")
-        
-    df_thermistors = df[thermistor_mask]
 
-    # Build dictionary: {thermistor_identifier: depth}
     depths = {}
-    for _, row in df_thermistors.iterrows():
-        thermistor_id = row[df.columns[0]]
-        try:
-            depth_value = row[depth_col]
-            if pd.isna(depth_value):
-                print(f"Warning: NaN depth for {thermistor_id}")
-                depth = None
-            else:
-                depth_str = str(depth_value).strip().replace(',', '.')
-                if depth_str.lower() in ['nan', '', 'none']:
-                    print(f"Warning: Empty depth for {thermistor_id}")
-                    depth = None
-                else:
-                    depth = float(depth_str)
-        except (ValueError, TypeError) as e:
-            print(f"Warning: Could not convert depth for {thermistor_id}: '{row[depth_col]}' (Error: {e})")
-            depth = None
-        depths[thermistor_id] = depth
+    for _, row in df.loc[thermistor_mask].iterrows():
+        key = row[first_col]
+        val = _to_float(row[depth_col])
+        depths[key] = float(val) if np.isfinite(val) else None
 
     return depths
 
