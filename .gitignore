@@ -7,3 +7,4 @@ maps/
 calibration/Technical questions Gemini data loggers and Probes.docx
 calibration/Technical questions Gemini data loggers and Probes.pdf
 calibration/photos/
+*.pyc
