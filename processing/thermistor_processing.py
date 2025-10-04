@@ -1492,3 +1492,138 @@ def splice_timeseries(dfs, time_col="TIME", out_path=None, file_stem=None):
             file_stem = "spliced"
         out.to_csv(out_path.with_name(f"{file_stem}.csv"), index=False)
     return out
+
+def derive_cts_line(temp_grid, x_coords, z_grid, surface_elev, bed_elev,
+                     gamma_K_per_MPa=0.0742, cts_tol=0.05, min_span_frac=0.15):
+    """
+    Compute CTS using pressure-adjusted melting point from thermistor_processing.melting_point_at_pressure.
+    Assumes z_grid are elevations (m a.s.l.). Overburden thickness h = surface_elev - z.
+    """
+    nz, nx = temp_grid.shape
+    cts_z, cts_T, cts_Tm = [], [], []
+    for j in range(nx):
+        zsurf = surface_elev[j]
+        zbed = bed_elev[j]
+        thick = zsurf - zbed
+        if thick <= 0 or np.isnan(thick):
+            cts_z.append(np.nan); cts_T.append(np.nan); cts_Tm.append(np.nan)
+            continue
+
+        # Overburden thickness above each grid level (positive downward)
+        h_over = zsurf - z_grid  # array
+        # Compute pressure melting point (function already accounts for physics)
+        Tm = melting_point_at_pressure(h_over)  # returns deg C array
+
+        Tcol = temp_grid[:, j]
+        # Limit to inside ice
+        mask = (z_grid <= zsurf) & (z_grid >= zbed)
+        diff = np.where(mask, np.abs(Tcol - Tm), np.nan)
+
+        if np.all(np.isnan(diff)):
+            cts_z.append(np.nan); cts_T.append(np.nan); cts_Tm.append(np.nan)
+            continue
+
+        k = np.nanargmin(diff)
+        if np.isnan(diff[k]) or diff[k] > cts_tol:
+            cts_z.append(np.nan); cts_T.append(np.nan); cts_Tm.append(np.nan)
+        else:
+            cts_z.append(z_grid[k]); cts_T.append(Tcol[k]); cts_Tm.append(Tm[k])
+
+    cts_z = np.asarray(cts_z)
+    valid = ~np.isnan(cts_z)
+    if valid.sum() < max(3, int(min_span_frac * nx)):
+        return {}
+    return {"x": np.asarray(x_coords), "z": cts_z, "T": np.asarray(cts_T), "Tm": np.asarray(cts_Tm)}
+
+# Pressure-dependent melting point calculations
+
+# simple implementation (SI units)
+rho_ice = 917.0        # kg m^-3
+g = 9.81               # m s^-2
+gamma = 0.0742         # K per MPa  (use 0.098 for air-saturated water if appropriate)
+
+def pressure_from_overburden(h, rho=rho_ice, g=g):
+    # h: ice thickness above point [m]
+    return rho * g * h   # Pa
+
+def melting_point_at_pressure(h, T0 = 0.0, gamma_K_per_MPa = gamma):
+    p_Pa = pressure_from_overburden(h)
+    p_MPa = p_Pa / 1e6
+    Tm = T0 - gamma_K_per_MPa * p_MPa
+    return Tm  # degrees C (if T0 in degC)
+
+def interpolate_segment(
+    prof_seg, borehole_coords_df, temp_data_dict, depth_dict,
+    n_depth, n_elev
+):
+    """
+    Wrapper around interpolate_glacier_temperature_field_2d.
+    Returns: T_seg (n_elev x n_x), elevs_seg (n_elev,), xnodes_seg (n_x,)
+    """
+    T_seg, elevs_seg, xnodes_seg = interpolate_glacier_temperature_field_2d(
+        prof_seg,
+        borehole_coords_df,
+        temp_data_dict,
+        depth_dict,
+        n_depth=n_depth,
+        n_elev=n_elev
+    )
+    return T_seg, elevs_seg, xnodes_seg
+
+def compute_cts_columnwise(
+    xnodes_seg, elevs_seg, T_masked, zs_on_x, zb_on_x,
+    adjust_cts_for_pressure, cts_tol
+):
+    """
+    Column-wise zero-crossing CTS (single line).
+    Returns (x_valid, z_valid) or (None, None) if insufficient points.
+    """
+    XX, YY = np.meshgrid(xnodes_seg, elevs_seg)
+    if adjust_cts_for_pressure:
+        h_over = (zs_on_x[None, :] - YY)
+        Tm = melting_point_at_pressure(h_over)
+        diff_field = T_masked - Tm
+    else:
+        diff_field = T_masked
+    diff_field = np.ma.masked_where(T_masked.mask, diff_field)
+    z_cts = np.full(xnodes_seg.shape, np.nan)
+    for j in range(diff_field.shape[1]):
+        col = diff_field[:, j]
+        if col.mask.all():
+            continue
+        vals = col.filled(np.nan)
+        good = np.isfinite(vals)
+        if good.sum() < 2:
+            continue
+        zc = elevs_seg[good]
+        vc = vals[good]
+        signs = np.sign(vc)
+        signs[signs == 0] = 1e-6
+        sc_idx = np.where(signs[:-1] * signs[1:] < 0)[0]
+        chosen_z = np.nan
+        if sc_idx.size:
+            bed_z = zb_on_x[j]
+            best_gap = np.inf
+            for k in sc_idx:
+                v1, v2 = vc[k], vc[k+1]
+                z1, z2 = zc[k], zc[k+1]
+                z_cross = z1 + (0 - v1) * (z2 - z1)/(v2 - v1) if (v2 - v1) != 0 else (z1+z2)/2
+                gap = z_cross - bed_z
+                if gap >= 0 and gap < best_gap:
+                    best_gap = gap
+                    chosen_z = z_cross
+        else:
+            near_zero = np.where(np.abs(vc) <= cts_tol)[0]
+            if near_zero.size:
+                bed_z = zb_on_x[j]
+                gaps = zc[near_zero] - bed_z
+                gaps[gaps < 0] = np.inf
+                idx = np.argmin(gaps)
+                if np.isfinite(gaps[idx]):
+                    chosen_z = zc[near_zero[idx]]
+        if np.isfinite(chosen_z):
+            z_cts[j] = chosen_z
+    valid = np.isfinite(z_cts)
+    if valid.sum() < 3:
+        return None, None
+    return xnodes_seg[valid], z_cts[valid]
