@@ -352,6 +352,72 @@ def bbox_from_gdf(gdf: gpd.GeoDataFrame, buffer_m: float = 0.0):
         xmin -= buffer_m; ymin -= buffer_m; xmax += buffer_m; ymax += buffer_m
     return float(xmin), float(ymin), float(xmax), float(ymax)
 
+def square_bbox_from_points(p1, p2, buffer_m: float = 0.0):
+    """
+    Build an axis-aligned square bbox (xmin, ymin, xmax, ymax) from two points (x, y).
+    The square is centered between p1 and p2 and its side is max(|dx|, |dy|), optionally
+    expanded by buffer_m on all sides.
+    """
+    if p1 is None or p2 is None:
+        raise ValueError("p1 and p2 must be (x, y) tuples.")
+    x1, y1 = float(p1[0]), float(p1[1])
+    x2, y2 = float(p2[0]), float(p2[1])
+
+    cx = 0.5 * (x1 + x2)
+    cy = 0.5 * (y1 + y2)
+    half = 0.5 * max(abs(x2 - x1), abs(y2 - y1))
+    half = half + float(buffer_m)
+
+    if half <= 0:
+        raise ValueError("Points are identical and buffer_m <= 0; square would have zero area.")
+
+    return (cx - half, cy - half, cx + half, cy + half)
+
+def make_square_bbox(bbox, buffer_m: float = 0.0, pixel_size: float | None = None):
+    """
+    Return a square bbox (xmin, ymin, xmax, ymax) centered on the input bbox.
+    - buffer_m: extra margin added on all sides (meters).
+    - pixel_size: if given, snap side length to an integer multiple of pixel_size
+                  to ensure WMS WIDTH == HEIGHT exactly.
+    """
+    xmin, ymin, xmax, ymax = map(float, bbox)
+    cx, cy = 0.5 * (xmin + xmax), 0.5 * (ymin + ymax)
+    w, h = (xmax - xmin), (ymax - ymin)
+    side = max(w, h) + 2.0 * float(buffer_m)
+    if pixel_size and pixel_size > 0:
+        side = float(np.ceil(side / float(pixel_size)) * float(pixel_size))
+    half = 0.5 * side
+    return (cx - half, cy - half, cx + half, cy + half)
+
+def square_bbox_from_gdf(gdf: gpd.GeoDataFrame, buffer_m: float = 0.0, pixel_size: float | None = None):
+    """
+    Square bbox around a GeoDataFrame’s extent, with optional buffer and pixel snapping.
+    """
+    xmin, ymin, xmax, ymax = gdf.total_bounds
+    return make_square_bbox((xmin, ymin, xmax, ymax), buffer_m=buffer_m, pixel_size=pixel_size)
+
+def download_swisstopo_orthophoto_from_points(
+    p1, p2, out_tif, *,
+    crs_epsg: int = 2056,
+    pixel_size: float = 1.0,
+    layer: str = "ch.swisstopo.swissimage",
+    fmt: str = "image/jpeg",
+    max_px: int = 8000,
+    timeout: int = 60,
+    buffer_m: float = 0.0
+):
+    """
+    Convenience wrapper: provide two (x,y) points, download a square orthophoto
+    covering the square in between them.
+    Coordinates must be in EPSG:crs_epsg (default LV95: 2056).
+    """
+    bbox = square_bbox_from_points(p1, p2, buffer_m=buffer_m)
+    return download_swisstopo_orthophoto(
+        bbox, out_tif,
+        crs_epsg=crs_epsg, pixel_size=pixel_size,
+        layer=layer, fmt=fmt, max_px=max_px, timeout=timeout
+    )
+
 def download_swisstopo_orthophoto(
     bbox, out_tif, crs_epsg=2056, pixel_size=1.0,
     layer="ch.swisstopo.swissimage", fmt="image/jpeg",
