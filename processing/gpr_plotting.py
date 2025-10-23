@@ -7,6 +7,7 @@ import rasterio
 from rasterio.merge import merge as rio_merge
 from matplotlib.colors import ListedColormap, BoundaryNorm
 from matplotlib.ticker import MultipleLocator, FuncFormatter
+from matplotlib.cm import ScalarMappable
 
 # For smoothing
 from scipy.ndimage import gaussian_filter1d
@@ -127,13 +128,62 @@ def compute_extent(transform, shape):
     ymin = transform.f + transform.e * nrows
     return (xmin, xmax, ymin, ymax)
 
-def imshow_grid(ax, grid, transform, *, cmap=cmc.batlow_r, alpha=0.7, vmin=None, vmax=None, zorder=3):
+def thickness_levels(grids: list, step: float = 10.0) -> np.ndarray:
+    """Global thickness levels for multiple grids, spaced by 'step' meters."""
+    mx = 0.0
+    for g in grids:
+        if g is None: 
+            continue
+        try:
+            mx = max(mx, float(np.nanmax(g)))
+        except Exception:
+            pass
+    top = float(np.ceil(mx / step) * step)
+    return np.arange(0.0, top + step, step, dtype=float)
+
+def plot_thickness_contours(
+    ax, grid, transform, *,
+    levels: np.ndarray | None = None,
+    step: float = 10.0,
+    minor_kwargs=None,
+    major_kwargs=None,
+    label_major: bool = False,
+    label_fmt: str = "%.0f m",
+    zorder_minor: int = 8,
+    zorder_major: int = 9
+):
+    """
+    Draw thickness contours (minor every 'step', major every 5*step).
+    Returns (cs_minor, cs_major, levels).
+    """
+    if levels is None:
+        levels = thickness_levels([grid], step=step)
+    X, Y = grid_coords_from_transform(transform, grid.shape)
+
+    minor_kwargs = {'colors': 'k', 'linewidths': 0.25, 'alpha': 0.35} | (minor_kwargs or {})
+    major_kwargs = {'colors': 'k', 'linewidths': 0.6,  'alpha': 0.7}  | (major_kwargs or {})
+
+    cs_minor = ax.contour(X, Y, grid, levels=levels, zorder=zorder_minor, **minor_kwargs)
+    majors = levels[(levels % (step * 5)) == 0]
+    cs_major = None
+    if majors.size > 0:
+        cs_major = ax.contour(X, Y, grid, levels=majors, zorder=zorder_major, **major_kwargs)
+        if label_major:
+            ax.clabel(cs_major, inline=True, fmt=label_fmt, fontsize=8)
+    return cs_minor, cs_major, levels
+
+def imshow_grid(ax, grid, transform, *, cmap=cmc.batlow_r, alpha=0.7, vmin=None, vmax=None, norm=None, zorder=3):
     """
     Shorthand to imshow a georeferenced grid. Returns (image, extent).
+    Supports either vmin/vmax or norm (norm takes precedence).
     """
     extent = compute_extent(transform, grid.shape)
-    im = ax.imshow(grid, extent=extent, origin='upper', cmap=cmap, alpha=alpha,
-                   vmin=vmin, vmax=vmax, zorder=zorder)
+    im = ax.imshow(
+        grid, extent=extent, origin='upper', cmap=cmap, alpha=alpha,
+        vmin=None if norm is not None else vmin,
+        vmax=None if norm is not None else vmax,
+        norm=norm, zorder=zorder
+    )
     return im, extent
 
 def grid_coords_from_transform(transform, shape):
@@ -294,23 +344,68 @@ def plot_dem_contours_from_tiles(
         zorder_major=zorder_major,
     )
 
-def draw_gpr_line_points(ax, gdf, *, size=3, color='k', alpha=0.5, zorder=6, label='_nolegend_', rasterized=True, highlight_id=None, highlight_color='crimson', highlight_size=8):
+def draw_gpr_line_points(
+    ax, gdf, *,
+    size=3, color='k', alpha=0.5, zorder=6, label='_nolegend_', rasterized=True,
+    highlight_ids=None, highlight_color='crimson', highlight_size=8,
+    highlight_distance_range=None, distance_column='distance',
+    highlight_distance_ranges=None  # NEW: list of (profile_id, (min_dist, max_dist))
+):
     """
     Draw GPR points as small dots.
-    Optionally highlight all points belonging to a specific profile.
+    Optionally highlight all points belonging to specific profiles.
+    Optionally highlight points within distance ranges per profile.
+    highlight_distance_ranges: list of (profile_id, (min_dist, max_dist)) tuples.
     """
-    # Plot highlighted profile points first (if requested)
-    if highlight_id is not None and 'profile' in gdf.columns:
-        mask = gdf['profile'] == highlight_id
-        if mask.any():
+    # Highlight by distance ranges per profile (NEW)
+    if highlight_distance_ranges is not None:
+        for pid, (min_dist, max_dist) in highlight_distance_ranges:
+            mask = (gdf['profile'] == pid) & (gdf[distance_column] >= min_dist) & (gdf[distance_column] <= max_dist)
             gdf_highlight = gdf[mask]
+            if not gdf_highlight.empty:
+                ax.scatter(
+                    gdf_highlight['x'], gdf_highlight['y'],
+                    s=highlight_size, c=highlight_color, marker='o',
+                    alpha=0.9, zorder=zorder+2, label=f'Line {pid} {min_dist}-{max_dist} m', rasterized=rasterized
+                )
+            # Remove highlighted from gdf for normal plot
+            gdf = gdf[~mask]
+
+    # Existing highlight by profile ID
+    if highlight_ids is not None and 'profile' in gdf.columns:
+        if not isinstance(highlight_ids, (list, tuple, set)):
+            highlight_ids = [highlight_ids]
+        highlight_ids = set(highlight_ids)
+        mask = gdf['profile'].isin(highlight_ids)
+        if mask.any():
+            for pid in sorted(gdf.loc[mask, 'profile'].unique()):
+                gdf_highlight = gdf[mask & (gdf['profile'] == pid)]
+                ax.scatter(
+                    gdf_highlight['x'], gdf_highlight['y'],
+                    s=highlight_size, c=highlight_color, marker='o',
+                    alpha=0.9, zorder=zorder+2, label=f'Line {int(pid)}', rasterized=rasterized
+                )
+            gdf = gdf[~mask]
+
+    # Highlight by distance range (single, legacy)
+    if highlight_distance_range is not None and distance_column in gdf.columns:
+        min_dist, max_dist = highlight_distance_range
+        mask = (gdf[distance_column] >= min_dist) & (gdf[distance_column] <= max_dist)
+        gdf_highlight = gdf[mask]
+        if not gdf_highlight.empty:
             ax.scatter(
                 gdf_highlight['x'], gdf_highlight['y'],
                 s=highlight_size, c=highlight_color, marker='o',
-                alpha=0.9, zorder=zorder+2, label=f'Profile {highlight_id}', rasterized=rasterized
+                alpha=0.9, zorder=zorder+2, label=f'{min_dist}-{max_dist} m', rasterized=rasterized
             )
-        # Plot the rest as normal (excluding highlighted)
         gdf = gdf[~mask]
+    elif highlight_distance_range is not None:
+        ax.scatter(
+            gdf['x'], gdf['y'],
+            s=highlight_size, c=highlight_color, marker='o',
+            alpha=0.9, zorder=zorder+2, label='Highlighted', rasterized=rasterized
+        )
+        gdf = gdf.iloc[0:0]
 
     # Plot all remaining points
     if not gdf.empty:
@@ -319,6 +414,7 @@ def draw_gpr_line_points(ax, gdf, *, size=3, color='k', alpha=0.5, zorder=6, lab
             s=size, c=color, marker='o',
             alpha=alpha, zorder=zorder, label=label, rasterized=rasterized
         )
+
 def annotate_coordinates_on_grid(
     ax,
     *,
@@ -850,6 +946,75 @@ def _plot_cts_layers(ax, elevs, xnodes, zs_on_x, zb_on_x, info, cts_tol,
                     linestyle=':', linewidth=2.0, zorder=14)
     return label_once_flag
 
+def _segment_indices(dist, thr):
+    dd = np.diff(dist)
+    brk = np.where(dd > thr)[0]
+    if brk.size == 0:
+        return [(0, dist.size)]
+    segs = []
+    start = 0
+    for b in brk:
+        segs.append((start, b+1))
+        start = b+1
+    segs.append((start, dist.size))
+    return segs
+
+# NEW: sample indices every fixed distance to avoid clutter (used for bed-uncertainty whiskers)
+def _sample_every(x, step):
+    x = np.asarray(x, float)
+    if x.size == 0:
+        return np.array([], dtype=int)
+    if step is None or step <= 0:
+        return np.arange(x.size, dtype=int)
+    idx = [0]
+    last = x[0]
+    for i in range(1, x.size):
+        if x[i] - last >= float(step):
+            idx.append(i)
+            last = x[i]
+    return np.array(idx, dtype=int)
+
+def _draw_panel_tag(ax, text, loc="TR", *, bbox=True, tag_kwargs=None, pad_pt=8, fontsize=18):
+    """
+    Draw a corner label inside the axes with a slight inward offset and translucent box.
+    loc: 'TL'|'TR'|'BL'|'BR'
+    """
+    from matplotlib.transforms import offset_copy
+
+    loc = (loc or "TR").upper()
+    corner = {
+        "TL": (0.0, 1.0, "left",  "top",   +pad_pt, -pad_pt),
+        "TR": (1.0, 1.0, "right", "top",   -pad_pt, -pad_pt),
+        "BL": (0.0, 0.0, "left",  "bottom",+pad_pt, +pad_pt),
+        "BR": (1.0, 0.0, "right", "bottom",-pad_pt, +pad_pt),
+    }.get(loc, (1.0, 1.0, "right", "top", -pad_pt, -pad_pt))
+    x, y, ha, va, dx, dy = corner
+
+    # Configure default rounded white box with slight transparency
+    if isinstance(bbox, dict):
+        bbox_props = bbox
+    elif bbox:
+        bbox_props = dict(
+            facecolor="white",
+            edgecolor="black",
+            boxstyle="round,pad=0.25",
+            linewidth=1.2,
+            alpha=0.85,
+        )
+    else:
+        bbox_props = None
+
+    # IMPORTANT: provide fig when using units="points"
+    tr = offset_copy(ax.transAxes, fig=ax.figure, x=dx, y=dy, units="points")
+
+    tk = dict(
+        fontsize=fontsize, color="black", fontweight="bold",
+        ha=ha, va=va, transform=tr, zorder=30, clip_on=True,
+    )
+    if tag_kwargs:
+        tk.update(tag_kwargs)
+    ax.text(x, y, str(text), bbox=bbox_props, **tk)
+
 ## Main function to plot ice temperature profile ----
 
 def plot_icetemp_profile(
@@ -870,35 +1035,119 @@ def plot_icetemp_profile(
     show_cts=True,
     adjust_cts_for_pressure=True,
     cts_tol=0.05,
+    borehole_clip_buffer=None,
     cmap=None,
+    label_colors: dict[str, tuple] | None = None,
+    # Whiskers
+    bed_uncertainty=None,
+    bed_unc_every: float = 25.0,
+    bed_unc_color: str = '0.3',
+    bed_unc_capsize: float = 3.0,
+    bed_unc_lw: float = 1.0,
+    bed_unc_alpha: float = 0.9,
+    # Borehole rendering + overlap
+    bh_marker_size: float = 5.0,
+    bh_line_lw: float = 1.0,
+    allow_bh_overlap: bool = True,
+    bh_edge_pad: float = 2.0,
+    # Colorbar control
+    cbar_min: float | None = None,
+    cbar_tick_step: float | None = None,
+    # Panel tag
+    panel_tag: str | None = None,
+    tag_loc: str = "TR",
+    tag_bbox: bool | dict = True,
+    tag_kwargs: dict | None = None,
     **deprecated
 ):
-    # Warn on deprecated args
+    """
+    Single interpolated englacial temperature profile.
+
+    New:
+    - cbar_min to fix colorbar lower bound
+    - bh_marker_size / bh_line_lw to control chain sizes
+    - whiskers via bed_uncertainty* args
+    - allow_bh_overlap/bh_edge_pad
+    """
     for k in list(deprecated.keys()):
         print(f"[plot_icetemp_profile] Ignoring unknown/deprecated argument: {k}")
 
+    # Prepare profile (flip/clipping)
     dist, zsurf, zbed, prof = _prepare_profile(profile_df, flip)
-    segments = _segment_indices(dist, float(break_threshold))
+    prof_flipped = prof.copy()
+    clip_mask = None
+    borehole_locs_for_pad = []
+
+    if borehole_clip_buffer is not None and float(borehole_clip_buffer) >= 0:
+        prof_has_xy = ('x' in prof.columns) and ('y' in prof.columns)
+        prof_xy = np.column_stack([prof['x'], prof['y']]) if prof_has_xy else None
+        bh_locs = []
+        if prof_xy is not None:
+            for _, r in borehole_coords_df.iterrows():
+                name = r.get('name')
+                if name not in temp_data_dict or name not in depth_dict:
+                    continue
+                temps = temp_data_dict[name]; depths = depth_dict[name]
+                has_pair = False
+                for k2, dep in getattr(depths, 'items', lambda: depths.items())():
+                    try:
+                        dnum = float(dep)
+                        tval = temps[k2] if hasattr(temps, '__getitem__') else temps.get(k2)
+                        tnum = float(tval)
+                        if np.isfinite(dnum) and np.isfinite(tnum):
+                            has_pair = True; break
+                    except Exception:
+                        pass
+                if not has_pair:
+                    continue
+                try:
+                    bx = float(str(r['x']).replace(',', '.'))
+                    by = float(str(r['y']).replace(',', '.'))
+                except Exception:
+                    continue
+                j = int(np.argmin(np.hypot(prof_xy[:, 0] - bx, prof_xy[:, 1] - by)))
+                loc = float(prof['distance'].iloc[j])
+                bh_locs.append(loc)
+        if len(bh_locs) >= 1:
+            lo = min(bh_locs); hi = max(bh_locs)
+            clip_lo = lo - float(borehole_clip_buffer)
+            clip_hi = hi + float(borehole_clip_buffer)
+            clip_mask = (dist >= clip_lo) & (dist <= clip_hi)
+            if np.count_nonzero(clip_mask) >= 2:
+                dist = dist[clip_mask]; zsurf = zsurf[clip_mask]; zbed = zbed[clip_mask]
+                prof = prof.loc[clip_mask].reset_index(drop=True)
+        borehole_locs_for_pad = bh_locs
+
+    # Color mapping (honor cbar_min)
     measured = _collect_measured_values(temp_data_dict)
+    if cbar_min is not None:
+        measured = np.append(measured, float(cbar_min))
     levels = _temperature_levels(measured, temp_step)
-    if cmap is None:
-        cmap = _discrete_icetemp_cmap_from_levels(levels)
+    cmap = cmap or _discrete_icetemp_cmap_from_levels(levels)
     norm = BoundaryNorm(levels, cmap.N, clip=True)
-    any_positive = (measured.max() > 0 + 1e-12)
 
-    if ax is None:
-        fig, ax = plt.subplots(figsize=(11, 5), dpi=300)
-    else:
-        fig = ax.figure
+    # Prepare whisker uncertainty array
+    unc_arr = None
+    if bed_uncertainty is not None:
+        try:
+            uconst = float(bed_uncertainty)
+            unc_arr = np.full_like(dist, uconst, dtype=float)
+        except Exception:
+            uarr = np.asarray(bed_uncertainty, dtype=float).ravel()
+            if uarr.size == dist.size:
+                unc_arr = uarr
+            elif clip_mask is not None and uarr.size == prof_flipped.shape[0]:
+                unc_arr = uarr[clip_mask]
+            elif uarr.size > 0 and np.isfinite(np.nanmean(uarr)):
+                unc_arr = np.full_like(dist, float(np.nanmean(uarr)))
 
-    im = None
-    first_seg = True
-    cts_label_done = False
+    fig, ax = (plt.subplots(figsize=(9, 5), dpi=300) if ax is None else (ax.figure, ax))
+    segments = _segment_indices(dist, float(break_threshold))
+    im = None; first_seg = True; cts_label_done = False
 
-    for si, (i0, i1) in enumerate(segments):
+    for (i0, i1) in segments:
         if i1 - i0 < 2:
             continue
-
         seg_dist = dist[i0:i1]
         zs_seg = _smooth(zsurf[i0:i1], smooth_sigma)
         zb_seg = _smooth(zbed[i0:i1], smooth_sigma)
@@ -906,32 +1155,23 @@ def plot_icetemp_profile(
 
         try:
             T_seg, elevs_seg, xnodes_seg = _interpolate_segment(
-                prof_seg, borehole_coords_df, temp_data_dict, depth_dict,
-                n_depth, n_elev
+                prof_seg, borehole_coords_df, temp_data_dict, depth_dict, n_depth, n_elev
             )
         except Exception as e:
-            print(f"Interpolation failed (segment {si}): {e}")
+            print(f"Interpolation failed: {e}")
             continue
 
         zs_on_x = np.interp(xnodes_seg, seg_dist, zs_seg)
         zb_on_x = np.interp(xnodes_seg, seg_dist, zb_seg)
         T_masked = _mask_inside(T_seg, elevs_seg, xnodes_seg, zs_on_x, zb_on_x)
 
-        x_edges = _edges(xnodes_seg)
-        y_edges = _edges(elevs_seg)
-        im = ax.pcolormesh(
-            x_edges, y_edges, T_masked,
-            cmap=cmap, norm=norm, shading='auto',
-            alpha=0.85, zorder=1
-        )
+        im = ax.pcolormesh(_edges(xnodes_seg), _edges(elevs_seg), T_masked,
+                           cmap=cmap, norm=norm, shading='auto', alpha=0.85, zorder=1)
 
         if plot_contours:
             XX, YY = np.meshgrid(xnodes_seg, elevs_seg)
-            ax.contour(
-                XX, YY, T_masked,
-                levels=levels[:-1],
-                colors='k', linewidths=0.6, alpha=0.45, zorder=5
-            )
+            ax.contour(XX, YY, T_masked, levels=levels[:-1],
+                       colors='k', linewidths=0.6, alpha=0.45, zorder=5)
 
         if show_cts:
             info = _extract_temperate_layers(
@@ -948,30 +1188,38 @@ def plot_icetemp_profile(
                 label='Surface' if first_seg else None, zorder=10)
         ax.plot(seg_dist, zb_seg, color='k', lw=1.4, ls='--',
                 label='Bed' if first_seg else None, zorder=10)
+
+        if unc_arr is not None:
+            unc_seg = unc_arr[i0:i1]
+            ids = _sample_every(seg_dist, bed_unc_every)
+            if ids.size > 0:
+                ax.errorbar(seg_dist[ids], zb_seg[ids], yerr=unc_seg[ids],
+                            fmt='none', ecolor=bed_unc_color, elinewidth=bed_unc_lw,
+                            capsize=bed_unc_capsize, capthick=bed_unc_lw,
+                            alpha=bed_unc_alpha, zorder=11, clip_on=False)
         first_seg = False
 
-    # Borehole markers (same logic retained)
+    # Boreholes
     prof_has_xy = ('x' in prof.columns) and ('y' in prof.columns)
     prof_xy = np.column_stack([prof['x'], prof['y']]) if prof_has_xy else None
+    bh_locs_for_limits = []
     for _, r in borehole_coords_df.iterrows():
         name = r.get('name')
         if name not in temp_data_dict or name not in depth_dict:
             continue
         try:
-            bx = float(str(r['x']).replace(',', '.'))
-            by = float(str(r['y']).replace(',', '.'))
+            bx = float(str(r['x']).replace(',', '.')); by = float(str(r['y']).replace(',', '.'))
         except:
             continue
         if prof_xy is not None:
             j = int(np.argmin(np.hypot(prof_xy[:, 0] - bx, prof_xy[:, 1] - by)))
-            loc = float(prof['distance'].iloc[j])
-            surf_elev = float(prof['zsurf'].iloc[j])
+            loc = float(prof['distance'].iloc[j]); surf_elev = float(prof['zsurf'].iloc[j])
         else:
-            loc = bx
-            surf_elev = np.interp(loc, dist, zsurf)
+            loc = bx; surf_elev = np.interp(loc, dist, zsurf)
 
-        temps  = temp_data_dict[name]
-        depths = depth_dict[name]
+        bh_locs_for_limits.append(loc)
+
+        temps = temp_data_dict[name]; depths = depth_dict[name]
         pairs = []
         for k, dep in getattr(depths, 'items', lambda: depths.items())():
             try:
@@ -988,54 +1236,345 @@ def plot_icetemp_profile(
         t_arr   = np.array([p[1] for p in pairs])
 
         ax.plot([loc, loc], [surf_elev - dep_arr.max(), surf_elev],
-                color='k', lw=1.0, zorder=20)
+                color='k', lw=bh_line_lw, zorder=20, clip_on=not allow_bh_overlap)
         for dd, tv in zip(dep_arr, t_arr):
             col = cmap(norm(tv))
-            ax.plot(
-                loc, surf_elev - dd, marker='o', linestyle='None', markersize=5,
-                markerfacecolor=col, markeredgecolor='black', markeredgewidth=0.4,
-                zorder=21
-            )
-        ax.text(loc, surf_elev + 6, name, color='red', fontsize=10,
-                ha='center', va='bottom', zorder=22)
+            ax.plot(loc, surf_elev - dd, marker='o', linestyle='None',
+                    markersize=bh_marker_size, markerfacecolor=col,
+                    markeredgecolor='black', markeredgewidth=0.4,
+                    zorder=21, clip_on=not allow_bh_overlap)
+        name_color = (label_colors or {}).get(name, 'red')
+        ax.text(loc, surf_elev + 6, name, color=name_color, fontsize=10,
+                ha='center', va='bottom', zorder=22, clip_on=not allow_bh_overlap)
 
     # Colorbar
     if im is not None:
-        dec = _decimals(temp_step)
-        lo_ticks = np.floor(measured.min()/temp_step)*temp_step
-        neg_ticks = np.arange(lo_ticks, 0.0+temp_step, temp_step)
-        ticks = list(neg_ticks)
-        if not np.any(np.isclose(ticks, 0.0)):
-            ticks.append(0.0)
-        if any_positive:
-            ticks.append(temp_step)
-        final = []
-        seen = set()
-        for t in ticks:
-            key = f"{t:.{dec}f}"
-            if key not in seen:
-                final.append(t); seen.add(key)
-        cb = fig.colorbar(im, ax=ax, label='Ice Temperature [°C]')
-        cb.set_ticks(final)
-        cb.set_ticklabels([f"{t:.{dec}f}" for t in final])
+        step_for_ticks = float(cbar_tick_step) if cbar_tick_step else float(temp_step)
+        dec = _decimals(step_for_ticks)
+        lo_edge = float(levels.min())
+        ticks_desc = np.arange(0.0, lo_edge - 1e-12, -step_for_ticks)
+        cb = fig.colorbar(im, ax=ax, location='bottom', orientation='horizontal',
+                          fraction=0.08, pad=0.1, aspect=40, anchor=(0.5, 0.0))
+        cb.set_ticks(ticks_desc)
+        cb.set_ticklabels([f"{t:.{dec}f}" for t in ticks_desc])
+        cb.set_label('Ice Temperature [°C]')
+        cb.ax.invert_xaxis()
+
+    # Corner panel tag: inside with offset and translucent box
+    if panel_tag:
+        _draw_panel_tag(ax, panel_tag, loc=tag_loc, bbox=tag_bbox, tag_kwargs=tag_kwargs, pad_pt=8, fontsize=16)
 
     ax.set_xlabel("Distance [m]")
     ax.set_ylabel("Elevation [m]")
-    ax.set_ylim(np.nanmin(zbed)-2, np.nanmax(zsurf)+2)
-    if title:
-        ax.set_title(title)
+    ax.set_ylim(np.nanmin(zbed)-2.0, np.nanmax(zsurf)+2.0)
+    if dist.size > 1:
+        x_min, x_max = float(dist.min()), float(dist.max())
+        if bh_locs_for_limits and allow_bh_overlap and bh_edge_pad > 0:
+            tol = max(0.5, 0.01 * max(x_max - x_min, 1.0))
+            if any(abs(loc - x_min) <= tol for loc in bh_locs_for_limits): x_min -= float(bh_edge_pad)
+            if any(abs(loc - x_max) <= tol for loc in bh_locs_for_limits): x_max += float(bh_edge_pad)
+        ax.set_xlim(x_min, x_max)
 
-    format_plot(ax=ax, title=title, x_tick_rotation=0,
-                legend_loc='upper left', adjust_linewidths=False)
-
+    format_plot(ax=ax, title=title, x_tick_rotation=0, legend_loc='upper left', adjust_linewidths=False, base_fontsize=24)
     # Deduplicate legend
     h, l = ax.get_legend_handles_labels()
-    uniq = {}
-    for hi, li in zip(h, l):
-        if li and li not in uniq:
-            uniq[li] = hi
-    ax.legend(uniq.values(), uniq.keys(),
-              frameon=True, edgecolor='black', framealpha=1,
-              facecolor='white', loc='upper left', ncol=1)
+    uniq = {};  [uniq.setdefault(li, hi) for hi, li in zip(h, l) if li]
+    ax.legend(uniq.values(), uniq.keys(), frameon=True, fancybox=False, edgecolor='black',
+              framealpha=1, facecolor='white', loc='upper left', ncol=1)
     plt.tight_layout()
     return fig, ax
+
+def plot_icetemp_profiles_side_by_side(
+    profiles,
+    borehole_coords_df,
+    *,
+    panel_tags=None,
+    flips='auto',
+    n_depth=500,
+    n_elev=600,
+    temp_step=0.1,
+    plot_contours=True,
+    break_threshold=50.0,
+    smooth_sigma=0.0,
+    show_cts=True,
+    adjust_cts_for_pressure=True,
+    cts_tol=0.05,
+    borehole_clip_buffer=None,
+    cmap=None,
+    label_colors_list=None,
+    figsize=(9, 5),
+    dpi=300,
+    panel_gap=0.18,
+    cbar_min: float | None = None,
+    cbar_tick_step: float | None = None,
+    bh_label_offset: float = 3.0,
+    y_top_margin: float = 12.0,
+    keep_true_slope: bool = True,
+    show_all_y_ticks: bool = True,
+    # Panel tags styling
+    tag_locs: str | list[str] = "TR",
+    tag_bbox: bool | dict = True,
+    tag_kwargs: dict | None = None,
+    allow_bh_overlap: bool = True,
+    bh_edge_pad: float = 2.0,
+    # Whiskers
+    bed_uncertainty=None,
+    bed_unc_every: float = 25.0,
+    bed_unc_color: str = '0.3',
+    bed_unc_capsize: float = 4.0,
+    bed_unc_lw: float = 1.2,
+    bed_unc_alpha: float = 0.9,
+    # Borehole sizes
+    bh_marker_size: float = 6.0,
+    bh_line_lw: float = 1.2,
+):
+    """
+    Side-by-side profiles with shared colorbar.
+
+    New:
+    - bh_marker_size / bh_line_lw to make chains/markers comparable to single-panel output
+    - bed uncertainty whiskers (same options as single)
+    - allow_bh_overlap/bh_edge_pad
+    """
+    import numpy as np
+    import matplotlib.pyplot as plt
+    from matplotlib.gridspec import GridSpec
+    from matplotlib.cm import ScalarMappable
+
+    n_panels = len(profiles)
+    if n_panels < 1:
+        raise ValueError("profiles must contain at least one entry")
+
+    def _as_list(val, n, default=None):
+        if isinstance(val, (list, tuple)):
+            return list(val) + [default] * (n - len(val))
+        return [val] * n
+
+    panel_tags = _as_list(panel_tags, n_panels, None)
+    flips_list = _as_list(flips, n_panels, 'auto')
+    buffers = _as_list(borehole_clip_buffer, n_panels, None)
+    label_colors_list = _as_list(label_colors_list, n_panels, None)
+    bed_unc_list = _as_list(bed_uncertainty, n_panels, None)
+    tag_locs_list = _as_list(tag_locs, n_panels, "TR")    # NEW
+
+    # Prepare profiles (flip + optional clip) and spans
+    def _prepare_with_clip(profile_df, flip, buffer_m, temp_data_dict, depth_dict):
+        dist, zsurf, zbed, prof = _prepare_profile(profile_df, flip)
+        borehole_locs = []
+        if buffer_m is not None and float(buffer_m) >= 0:
+            prof_has_xy = ('x' in prof.columns) and ('y' in prof.columns)
+            prof_xy = np.column_stack([prof['x'], prof['y']]) if prof_has_xy else None
+            if prof_xy is not None:
+                for _, r in borehole_coords_df.iterrows():
+                    name = r.get('name')
+                    if (name is None) or (name not in temp_data_dict) or (name not in depth_dict):
+                        continue
+                    temps = temp_data_dict[name]; depths = depth_dict[name]
+                    has_pair = False
+                    for k2, dep in getattr(depths, 'items', lambda: depths.items())():
+                        try:
+                            dnum = float(dep)
+                            tval = temps[k2] if hasattr(temps, '__getitem__') else temps.get(k2)
+                            tnum = float(tval)
+                            if np.isfinite(dnum) and np.isfinite(tnum):
+                                has_pair = True; break
+                        except Exception:
+                            pass
+                    if not has_pair:
+                        continue
+                    try:
+                        bx = float(str(r['x']).replace(',', '.')); by = float(str(r['y']).replace(',', '.'))
+                    except Exception:
+                        continue
+                    j = int(np.argmin(np.hypot(prof_xy[:, 0] - bx, prof_xy[:, 1] - by)))
+                    loc = float(prof['distance'].iloc[j])
+                    borehole_locs.append(loc)
+            if len(borehole_locs) >= 1:
+                lo = min(borehole_locs); hi = max(borehole_locs)
+                clip_lo = lo - float(buffer_m); clip_hi = hi + float(buffer_m)
+                mask = (dist >= clip_lo) & (dist <= clip_hi)
+                if np.count_nonzero(mask) >= 2:
+                    dist = dist[mask]; zsurf = zsurf[mask]; zbed = zbed[mask]
+                    prof = prof.loc[mask].reset_index(drop=True)
+
+        y_min = float(np.nanmin(zbed)) - 2.0
+        y_max = float(np.nanmax(zsurf)) + float(y_top_margin)
+        x_min = float(np.nanmin(dist)); x_max = float(np.nanmax(dist))
+        if borehole_locs:
+            tol = max(0.5, 0.01 * max(x_max - x_min, 1.0))
+            if allow_bh_overlap and bh_edge_pad > 0:
+                if any(abs(loc - x_min) <= tol for loc in borehole_locs): x_min -= float(bh_edge_pad)
+                if any(abs(loc - x_max) <= tol for loc in borehole_locs): x_max += float(bh_edge_pad)
+        return dist, zsurf, zbed, prof, (x_min, x_max, y_min, y_max, max(x_max-x_min,1e-9), max(y_max-y_min,1e-9))
+
+    prepared = []
+    for (profile_df, tdict, ddict), fl, buf in zip(profiles, flips_list, buffers):
+        prepared.append(_prepare_with_clip(profile_df, fl, buf, tdict, ddict))
+
+    # Shared color mapping (honor cbar_min)
+    all_measured = []
+    for _, tdict, _ in profiles:
+        all_measured.append(_collect_measured_values(tdict))
+    all_measured = np.concatenate(all_measured) if all_measured else np.array([-1.0, 0.0])
+    if cbar_min is not None:
+        all_measured = np.append(all_measured, float(cbar_min))
+    levels = _temperature_levels(all_measured, temp_step)
+    cmap = cmap or _discrete_icetemp_cmap_from_levels(levels)
+    norm = BoundaryNorm(levels, cmap.N, clip=True)
+
+    width_ratios = [max(sp[4]/sp[5], 1e-9) for *_, sp in prepared] if keep_true_slope else [1.0]*len(prepared)
+
+    fig = plt.figure(figsize=figsize, dpi=dpi)
+    gs = GridSpec(1, len(prepared), figure=fig, wspace=panel_gap, width_ratios=width_ratios)
+    axs = [fig.add_subplot(gs[0, i]) for i in range(len(prepared))]
+
+    def _draw_on_ax(ax, i_panel, temp_data_dict, depth_dict, label_colors, tag_text, bed_unc_panel):
+        dist, zsurf, zbed, prof, (x_min, x_max, y_min, y_max, _, _) = prepared[i_panel]
+
+        # Local whisker array
+        unc_arr = None
+        if bed_unc_panel is not None:
+            try:
+                uconst = float(bed_unc_panel);  unc_arr = np.full_like(dist, uconst, dtype=float)
+            except Exception:
+                uarr = np.asarray(bed_unc_panel, dtype=float).ravel()
+                if uarr.size == dist.size:
+                    unc_arr = uarr
+                elif uarr.size > 0 and np.isfinite(np.nanmean(uarr)):
+                    unc_arr = np.full_like(dist, float(np.nanmean(uarr)))
+
+        segments = _segment_indices(dist, float(break_threshold))
+        first_seg = True; cts_labeled = False
+
+        for (i0, i1) in segments:
+            if i1 - i0 < 2:
+                continue
+            seg_dist = dist[i0:i1]
+            zs_seg = _smooth(zsurf[i0:i1], smooth_sigma)
+            zb_seg = _smooth(zbed[i0:i1], smooth_sigma)
+            prof_seg = prof.iloc[i0:i1].copy()
+
+            try:
+                T_seg, elevs_seg, xnodes_seg = _interpolate_segment(
+                    prof_seg, borehole_coords_df, temp_data_dict, depth_dict, n_depth, n_elev
+                )
+            except Exception as e:
+                print(f"Interpolation failed (segment): {e}")
+                continue
+
+            zs_on_x = np.interp(xnodes_seg, seg_dist, zs_seg)
+            zb_on_x = np.interp(xnodes_seg, seg_dist, zb_seg)
+            T_masked = _mask_inside(T_seg, elevs_seg, xnodes_seg, zs_on_x, zb_on_x)
+
+            ax.pcolormesh(_edges(xnodes_seg), _edges(elevs_seg), T_masked,
+                          cmap=cmap, norm=norm, shading='auto', alpha=0.85, zorder=1)
+
+            if plot_contours:
+                XX, YY = np.meshgrid(xnodes_seg, elevs_seg)
+                ax.contour(XX, YY, T_masked, levels=levels[:-1],
+                           colors='k', linewidths=0.6, alpha=0.45, zorder=5)
+
+            if show_cts:
+                info = _extract_temperate_layers(
+                    T_masked, elevs_seg, xnodes_seg, zs_on_x, zb_on_x,
+                    adjust_cts_for_pressure, cts_tol
+                )
+                if info is not None:
+                    cts_labeled = _plot_cts_layers(
+                        ax, elevs_seg, xnodes_seg, zs_on_x, zb_on_x,
+                        info, cts_tol, adjust_cts_for_pressure, cts_labeled
+                    )
+
+            ax.plot(seg_dist, zs_seg, color='k', lw=1.4,
+                    label='Surface' if first_seg else None, zorder=10)
+            ax.plot(seg_dist, zb_seg, color='k', lw=1.4, ls='--',
+                    label='Bed' if first_seg else None, zorder=10)
+
+            if unc_arr is not None:
+                unc_seg = unc_arr[i0:i1]
+                ids = _sample_every(seg_dist, bed_unc_every)
+                if ids.size > 0:
+                    ax.errorbar(seg_dist[ids], zb_seg[ids], yerr=unc_seg[ids],
+                                fmt='none', ecolor=bed_unc_color, elinewidth=bed_unc_lw,
+                                capsize=bed_unc_capsize, capthick=bed_unc_lw,
+                                alpha=bed_unc_alpha, zorder=11, clip_on=False)
+            first_seg = False
+
+        # Boreholes
+        prof_has_xy = ('x' in prof.columns) and ('y' in prof.columns)
+        prof_xy = np.column_stack([prof['x'], prof['y']]) if prof_has_xy else None
+        for _, r in borehole_coords_df.iterrows():
+            name = r.get('name')
+            if name not in temp_data_dict or name not in depth_dict:
+                continue
+            try:
+                bx = float(str(r['x']).replace(',', '.')); by = float(str(r['y']).replace(',', '.'))
+            except:
+                continue
+            if prof_xy is not None:
+                j = int(np.argmin(np.hypot(prof_xy[:, 0] - bx, prof_xy[:, 1] - by)))
+                loc = float(prof['distance'].iloc[j]); surf_elev = float(prof['zsurf'].iloc[j])
+            else:
+                loc = bx; surf_elev = np.interp(loc, dist, zsurf)
+
+            temps = temp_data_dict[name]; depths = depth_dict[name]
+            pairs = []
+            for k, dep in getattr(depths, 'items', lambda: depths.items())():
+                try:
+                    tval = temps[k] if hasattr(temps, '__getitem__') else temps.get(k)
+                    dnum = float(dep); tnum = float(tval)
+                    if np.isfinite(dnum) and np.isfinite(tnum):
+                        pairs.append((dnum, tnum))
+                except:
+                    continue
+            if not pairs:
+                continue
+            pairs.sort()
+            dep_arr = np.array([p[0] for p in pairs])
+            t_arr   = np.array([p[1] for p in pairs])
+
+            ax.plot([loc, loc], [surf_elev - dep_arr.max(), surf_elev],
+                    color='k', lw=bh_line_lw, zorder=20, clip_on=not allow_bh_overlap)
+            for dd, tv in zip(dep_arr, t_arr):
+                col = cmap(norm(tv))
+                ax.plot(loc, surf_elev - dd, marker='o', linestyle='None',
+                        markersize=bh_marker_size, markerfacecolor=col,
+                        markeredgecolor='black', markeredgewidth=0.4,
+                        zorder=21, clip_on=not allow_bh_overlap)
+
+            name_color = (label_colors or {}).get(name, 'red')
+            ax.text(loc, surf_elev + float(bh_label_offset), name,
+                    color=name_color, fontsize=18, ha='center', va='bottom',
+                    zorder=22, clip_on=not allow_bh_overlap)
+
+        ax.set_xlabel("Distance [m]")
+        if i_panel == 0: ax.set_ylabel("Elevation [m]")
+        ax.set_xlim(x_min, x_max); ax.set_ylim(y_min, y_max)
+        if keep_true_slope: ax.set_aspect('equal', adjustable='box')
+        ax.tick_params(axis='y', labelleft=(show_all_y_ticks or i_panel == 0))
+
+        # Panel tag (inside with offset and translucent box)
+        if tag_text:
+            _draw_panel_tag(ax, tag_text, loc=tag_locs_list[i_panel],
+                            bbox=tag_bbox, tag_kwargs=tag_kwargs, pad_pt=8)
+
+        format_plot(ax=ax, title=None, x_tick_rotation=0, legend_loc='upper left', adjust_linewidths=False)
+        if i_panel != 0 and ax.get_legend() is not None:
+            ax.get_legend().remove()
+
+    for i, (ax, (prof_df, tdict, ddict), lbl_colors, tag) in enumerate(zip(axs, profiles, label_colors_list, panel_tags)):
+        _draw_on_ax(ax, i, tdict, ddict, lbl_colors, tag, bed_unc_list[i])
+
+    sm = ScalarMappable(norm=norm, cmap=cmap); sm.set_array([])
+    lo_edge = float(levels.min())
+    step_for_ticks = float(cbar_tick_step) if cbar_tick_step else float(temp_step)
+    dec = _decimals(step_for_ticks)
+    ticks_desc = np.arange(0.0, lo_edge - 1e-12, -step_for_ticks)
+    cb = fig.colorbar(sm, ax=axs, location='bottom', orientation='horizontal',
+                      fraction=0.08, pad=0.1, aspect=40, anchor=(0.5, 0.0))
+    cb.set_ticks(ticks_desc)
+    cb.set_ticklabels([f"{t:.{dec}f}" for t in ticks_desc])
+    cb.set_label('Ice Temperature [°C]')
+    cb.ax.invert_xaxis()
+
+    return fig, axs
