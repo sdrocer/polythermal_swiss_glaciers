@@ -62,6 +62,7 @@ def plot_switzerland_glacier_overview(
     field_site_label_line_color: str = "black",
     field_site_label_line_width: float = 1.5,
     field_site_label_line_anchor: dict | None = None,  # NEW: per-site anchor ("ur", "ll", etc.)
+    cut_to_country_outline: bool = False,
 ):
     """
     Switzerland glacier overview.
@@ -356,6 +357,18 @@ def plot_switzerland_glacier_overview(
                 if extent[0] <= fx <= extent[1] and extent[2] <= fy <= extent[3]:
                     ax.scatter([fx], [fy], s=city_marker_size * 1.5,
                                zorder=10, color="red", marker="D", antialiased=False)
+
+    if cut_to_country_outline:
+        fig.canvas.draw()
+        arr = np.array(fig.canvas.renderer.buffer_rgba())
+        # Resize mask to match arr shape
+        from skimage.transform import resize
+        mask = country_rgba[..., 3] > 0
+        mask_resized = resize(mask.astype(float), arr.shape[:2], order=0, preserve_range=True) > 0.5
+        arr[..., 3][~mask_resized] = 0
+        ax.clear()
+        ax.imshow(arr, extent=extent, origin="upper")
+        ax.set_axis_off()
 
     # Format
     ax.set_xlim(extent[0], extent[1])
