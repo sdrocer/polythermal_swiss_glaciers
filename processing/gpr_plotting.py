@@ -496,7 +496,7 @@ def format_axes_coords(ax=None, x_step=None, y_step=None, thousands='none', unit
     Format axis ticks for projected map coordinates (e.g., EPSG:2056).
     - x_step/y_step: major tick spacing in map units (e.g., 200)
     - thousands: 'none' | 'space' | 'comma' | 'apostrophe'
-    - unit: append unit string (e.g., 'm') or None
+    - unit: (ignored for tick labels)
     - decimals: number of decimals (0 -> clean integers)
     - tick_len/tick_pad: keep ticks outside the plot
     - hide_lower_edge: hide tick labels sitting exactly on left/bottom border
@@ -522,7 +522,7 @@ def format_axes_coords(ax=None, x_step=None, y_step=None, thousands='none', unit
                 base = f"{int(round(v)):,}"
             elif thousands == 'apostrophe':
                 base = f"{int(round(v)):,}".replace(',', "'")
-        return f"{base} {unit}" if unit else base
+        return base  # unit is not shown
 
     ax.xaxis.set_major_formatter(FuncFormatter(lambda val, pos: _fmt(val)))
     ax.yaxis.set_major_formatter(FuncFormatter(lambda val, pos: _fmt(val)))
@@ -996,7 +996,7 @@ def _draw_panel_tag(ax, text, loc="TR", *, bbox=True, tag_kwargs=None, pad_pt=8,
     elif bbox:
         bbox_props = dict(
             facecolor="white",
-            edgecolor="black",
+            edgecolor="red",
             boxstyle="round,pad=0.25",
             linewidth=1.2,
             alpha=0.85,
@@ -1008,7 +1008,7 @@ def _draw_panel_tag(ax, text, loc="TR", *, bbox=True, tag_kwargs=None, pad_pt=8,
     tr = offset_copy(ax.transAxes, fig=ax.figure, x=dx, y=dy, units="points")
 
     tk = dict(
-        fontsize=fontsize, color="black", fontweight="bold",
+        fontsize=fontsize, color="red", fontweight="bold",
         ha=ha, va=va, transform=tr, zorder=30, clip_on=True,
     )
     if tag_kwargs:

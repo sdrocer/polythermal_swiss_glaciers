@@ -6,11 +6,12 @@ import warnings
 import re
 from rasterio.transform import from_origin
 from rasterio.features import geometry_mask
-from shapely.geometry import Point
-from scipy.interpolate import griddata
-from scipy.interpolate import Rbf
+from shapely.geometry import Point, LineString, MultiLineString, MultiPoint, GeometryCollection
+from scipy.interpolate import griddata, Rbf
 from shapely.ops import unary_union
 from io import BytesIO
+import os
+import glob
 
 def read_thickness_txt(path):
     """
@@ -231,6 +232,154 @@ def load_points_from_csv(paths, epsg=2056, source_epsg=None, drop_duplicates=Tru
     )
     return gdf
 
+def load_points_from_shps_dir(shp_dir, *, epsg=2056, source_epsg=None, drop_duplicates=True, aggregate_duplicates='mean', return_type='gdf'):
+    """
+    Load all .shp files from a directory. Each shapefile is treated as one profile (profile id
+    extracted from filename with regex r'profil[-_]?0*(\d+)'). Extracts all vertices from
+    LineString / MultiLineString / Point geometries into point rows. Returns a GeoDataFrame
+    (or DataFrame if return_type=='df') in target EPSG.
+
+    Output columns include at least: profile, x, y, source, plus any attribute fields present.
+    """
+    shp_files = sorted(glob.glob(os.path.join(shp_dir, "*.shp")))
+    rows = []
+    file_crs = None
+
+    for fp in shp_files:
+        try:
+            g = gpd.read_file(fp)
+        except Exception as e:
+            warnings.warn(f"failed to read '{fp}': {e}")
+            continue
+
+        # If user provided source_epsg and file has no CRS, set it
+        if (g.crs is None or g.crs == {}) and source_epsg:
+            try:
+                g = g.set_crs(f"EPSG:{source_epsg}", allow_override=True)
+            except Exception:
+                pass
+
+        # capture file CRS (first encountered)
+        if g.crs is not None and file_crs is None:
+            try:
+                file_crs = int(g.crs.to_epsg())
+            except Exception:
+                file_crs = None
+
+        # profile id from filename (e.g. profil-001)
+        m = re.search(r'profil[-_]?0*([0-9]+)', os.path.basename(fp), flags=re.IGNORECASE)
+        file_profile = int(m.group(1)) if m else None
+
+        for _, feat in g.iterrows():
+            geom = feat.geometry
+            if geom is None or geom.is_empty:
+                continue
+
+            # extract attributes (except geometry)
+            attrs = feat.drop(labels=['geometry'], errors='ignore').to_dict()
+
+            # prefer 'profile' attribute in file if present, otherwise use filename-derived id
+            profile_val = attrs.get('profile', file_profile)
+            try:
+                if pd.notna(profile_val):
+                    profile_val = int(profile_val)
+            except Exception:
+                # keep as-is if not convertible
+                pass
+
+            # iterator to yield coordinate tuples from geometry
+            def iter_coords(ggeom):
+                if isinstance(ggeom, Point):
+                    yield (ggeom.x, ggeom.y)
+                elif isinstance(ggeom, LineString):
+                    for c in ggeom.coords:
+                        yield (float(c[0]), float(c[1]))
+                elif isinstance(ggeom, MultiLineString):
+                    for part in ggeom.geoms:
+                        for c in part.coords:
+                            yield (float(c[0]), float(c[1]))
+                elif isinstance(ggeom, MultiPoint):
+                    for part in ggeom.geoms:
+                        yield (float(part.x), float(part.y))
+                elif isinstance(ggeom, GeometryCollection):
+                    for part in ggeom.geoms:
+                        for c in iter_coords(part):
+                            yield c
+                else:
+                    # fallback: try coords attribute
+                    try:
+                        for c in getattr(ggeom, 'coords', []):
+                            yield (float(c[0]), float(c[1]))
+                    except Exception:
+                        return
+
+            for x, y in iter_coords(geom):
+                row = dict(attrs)  # copy attributes
+                row.update({
+                    'x': float(x),
+                    'y': float(y),
+                    'profile': profile_val,
+                    'source': fp
+                })
+                rows.append(row)
+
+    if not rows:
+        empty_gdf = gpd.GeoDataFrame(columns=['profile', 'x', 'y', 'source'], geometry=[], crs=f"EPSG:{epsg}")
+        if return_type == 'df':
+            return pd.DataFrame(columns=['profile', 'x', 'y', 'source'])
+        return empty_gdf
+
+    df = pd.DataFrame(rows)
+
+    # Determine input CRS: prefer explicit source_epsg, else file_crs (from files)
+    in_crs = source_epsg if source_epsg else file_crs
+
+    # reproject coordinates if needed
+    if in_crs and int(in_crs) != int(epsg):
+        tmp = gpd.GeoDataFrame(df, geometry=[Point(xy) for xy in zip(df['x'], df['y'])], crs=f"EPSG:{in_crs}")
+        tmp = tmp.to_crs(f"EPSG:{epsg}")
+        df['x'] = tmp.geometry.x
+        df['y'] = tmp.geometry.y
+
+    # Clean numeric and drop invalid
+    df['x'] = pd.to_numeric(df['x'], errors='coerce')
+    df['y'] = pd.to_numeric(df['y'], errors='coerce')
+    df = df.replace([np.inf, -np.inf], np.nan).dropna(subset=['x', 'y'])
+
+    # Optional duplicate handling / aggregation (consistent with CSV/TXT loaders)
+    if drop_duplicates:
+        df['x_round'] = df['x'].round(6)
+        df['y_round'] = df['y'].round(6)
+        if aggregate_duplicates in ('mean', 'median'):
+            numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
+            agg = {}
+            for c in df.columns:
+                if c in ('x_round', 'y_round'):
+                    continue
+                if c in ('x', 'y'):
+                    agg[c] = 'first'
+                elif c == 'profile':
+                    agg[c] = 'first'
+                elif c in numeric_cols:
+                    agg[c] = aggregate_duplicates
+                else:
+                    agg[c] = 'first'
+            df = df.sort_values('profile', na_position='last').groupby(['x_round', 'y_round'], as_index=False).agg(agg).drop(columns=['x_round', 'y_round'])
+        elif aggregate_duplicates == 'last':
+            df = df.sort_index()
+            df = df.drop_duplicates(subset=['x_round', 'y_round'], keep='last').drop(columns=['x_round', 'y_round'])
+        else:
+            df = df.drop_duplicates(subset=['x_round', 'y_round']).drop(columns=['x_round', 'y_round'])
+
+    if return_type == 'df':
+        return df
+
+    gdf = gpd.GeoDataFrame(df, geometry=[Point(xy) for xy in zip(df['x'], df['y'])], crs=f"EPSG:{epsg}")
+    # ensure columns order similar to example (profile,x,y,...,source,geometry) if desired
+    cols = [c for c in ['profile', 'x', 'y'] if c in gdf.columns] + [c for c in gdf.columns if c not in ('profile', 'x', 'y', 'geometry')]
+    cols = cols + ['geometry']
+    gdf = gdf.loc[:, [c for c in cols if c in gdf.columns]]
+    return gdf
 
 def interpolate_thickness_to_grid(points_gdf, value_col='thickness', pixel_size=20.0, rbf_function='linear', polygon_mask: gpd.GeoDataFrame|None=None, padding=0.0, max_rbf_points=15000):
     """
@@ -479,145 +628,83 @@ def download_swisstopo_orthophoto(
 
     return out_tif, transform, rasterio.crs.CRS.from_epsg(crs_epsg)
 
-def load_borehole_positions(
-    path: str,
-    epsg: int = 2056,
-    keep_names: list[str] | None = None,
-    case_insensitive: bool = True
-):
+def load_borehole_positions(path, epsg=2056, keep_names=None, case_insensitive=True):
     """
-    Read the new borehole CSV (comma-separated) with columns like:
-      number,name,date,X,Y,borehole depth (m),chaing/logger,chain length [m]
-    - Ignores empty/comment rows (starting with '*')
-    - Parses mixed date formats (dd/mm/yyyy, dd.mm.yyyy, etc.)
-    - Returns only the most recent entry per name
-    - Adds extra columns when available: depth_m, chain_logger, chain_length_m
+    Read borehole CSV and return (GeoDataFrame, missing_list).
+    - auto-detects delimiter
+    - strips BOM/whitespace from headers and values
+    - locates name/X/Y columns case-insensitively
+    - returns GeoDataFrame in EPSG:epsg and list of requested names not found
     """
-    # Read as strings; keep rows for our own cleaning
-    df = pd.read_csv(path, sep=',', engine='python', dtype=str, skip_blank_lines=True)
-    # Drop fully empty rows
-    df = df.dropna(how='all')
+    path = os.path.normpath(os.path.expanduser(str(path)))
+    if not os.path.exists(path):
+        raise FileNotFoundError(f"borehole CSV not found: {path}")
 
-    # Normalize headers
-    orig_cols = list(df.columns)
-    lower = {c.lower().strip(): c for c in df.columns}
+    # sniff delimiter
+    with open(path, 'r', encoding='utf-8', errors='ignore') as fh:
+        sample = fh.read(8192)
+        try:
+            dialect = csv.Sniffer().sniff(sample, delimiters=[',', ';', '\t'])
+            delim = dialect.delimiter
+        except Exception:
+            delim = ','
 
-    def find_col(*keys, default=None):
-        for k in keys:
-            if k in lower:
-                return lower[k]
-        # fuzzy search
-        for lc, oc in lower.items():
-            if any(all(t in lc for t in k.split()) for k in keys):
-                return oc
-        return default
+    df = pd.read_csv(path, sep=delim, engine='python', dtype=str, skip_blank_lines=True)
+    # clean column names and string values
+    df.columns = [c.strip().lstrip('\ufeff') for c in df.columns]
+    for c in df.columns:
+        if df[c].dtype == object:
+            df[c] = df[c].astype(str).str.strip()
 
-    col_name = find_col('name')
-    col_date = find_col('date')
-    col_x = find_col('x')
-    col_y = find_col('y')
-    col_depth = find_col('borehole depth (m)', 'borehole depth', 'depth (m)', 'depth')
-    col_chain_logger = find_col('chain/logger', 'chaing/logger', 'logger', 'chain id')
-    col_chain_len = find_col('chain length [m]', 'chain length', 'length [m]')
+    # find essential columns case-insensitively
+    cols_lower = {c.lower(): c for c in df.columns}
+    def find_col(names):
+        for n in names:
+            if n.lower() in cols_lower:
+                return cols_lower[n.lower()]
+        return None
 
-    needed = [col_name, col_date, col_x, col_y]
-    if any(c is None for c in needed):
-        raise ValueError(f"Missing required columns in {path}. Found columns: {orig_cols}")
+    name_col = find_col(['name', 'station', 'site'])
+    x_col = find_col(['x', 'east', 'easting', 'lon', 'longitude'])
+    y_col = find_col(['y', 'north', 'northing', 'lat', 'latitude'])
+    if name_col is None or x_col is None or y_col is None:
+        raise ValueError(f"could not find name/X/Y columns in {path}. found columns: {df.columns.tolist()}")
 
-    df = df[[c for c in [col_name, col_date, col_x, col_y, col_depth, col_chain_logger, col_chain_len] if c in df.columns]].copy()
-    df = df.rename(columns={
-        col_name: 'name', col_date: 'date', col_x: 'x', col_y: 'y',
-        **({col_depth: 'depth_m'} if col_depth else {}),
-        **({col_chain_logger: 'chain_logger'} if col_chain_logger else {}),
-        **({col_chain_len: 'chain_length_m'} if col_chain_len else {})
-    })
+    # convert coordinates
+    df[x_col] = pd.to_numeric(df[x_col].str.replace("'", "").str.replace(",", ""), errors='coerce')
+    df[y_col] = pd.to_numeric(df[y_col].str.replace("'", "").str.replace(",", ""), errors='coerce')
+    df = df.dropna(subset=[x_col, y_col]).copy()
 
-    # Clean names and drop comment/asterisk rows
-    df['name'] = df['name'].astype(str).str.strip()
-    df = df[df['name'].notna() & (df['name'] != '') & ~df['name'].str.startswith('*')]
+    # geometry and CRS
+    gdf = gpd.GeoDataFrame(df, geometry=[Point(xy) for xy in zip(df[x_col].astype(float), df[y_col].astype(float))], crs=f"EPSG:{epsg}")
 
-    # Parse dates (robust: dd/mm/yyyy, dd.mm.yyyy, etc.)
-    df['date_parsed'] = pd.to_datetime(df['date'].astype(str).str.strip().str.replace('\\.', '/', regex=True),
-                                       dayfirst=True, errors='coerce')
+    # standardize name column to 'name'
+    if name_col != 'name':
+        gdf = gdf.rename(columns={name_col: 'name'})
 
-    # Numeric conversions
-    df['x_num'] = df['x'].apply(_to_float)
-    df['y_num'] = df['y'].apply(_to_float)
-    if 'depth_m' in df.columns:
-        df['depth_m'] = df['depth_m'].apply(_to_float)
-    if 'chain_length_m' in df.columns:
-        df['chain_length_m'] = df['chain_length_m'].apply(_to_float)
-
-    df['measured'] = df['x_num'].notna() & df['y_num'].notna()
-
-    # Optional name filter
-    wanted = None
+    # filter by keep_names if given
+    missing = []
     if keep_names:
-        keep = [str(n).strip() for n in keep_names if str(n).strip()]
+        req = keep_names
         if case_insensitive:
-            df['_key'] = df['name'].astype(str).str.upper()
-            wanted = {n.upper() for n in keep}
+            present_mask = gdf['name'].str.lower().isin([r.lower() for r in req])
+            present_names = gdf.loc[present_mask, 'name'].unique().tolist()
+            missing = [r for r in req if r.lower() not in [p.lower() for p in present_names]]
+            gdf = gdf.loc[present_mask].copy()
         else:
-            df['_key'] = df['name'].astype(str)
-            wanted = set(keep)
-        df = df[df['_key'].isin(wanted)]
-    else:
-        df['_key'] = df['name']
+            present_mask = gdf['name'].isin(req)
+            present_names = gdf.loc[present_mask, 'name'].unique().tolist()
+            missing = [r for r in req if r not in present_names]
+            gdf = gdf.loc[present_mask].copy()
 
-    # Keep latest measured entry per name
-    measured = df[df['measured']].copy()
-    if not measured.empty:
-        measured = (measured
-                    .sort_values(['name', 'date_parsed', 'date'])
-                    .groupby('name', as_index=False, sort=False)
-                    .tail(1))
+    # keep useful columns, ensure 'name' exists
+    cols_keep = [c for c in ['number', 'name', 'date', x_col, y_col, 'borehole depth (m)', 'chaing/logger', 'chain length [m]'] if c in gdf.columns]
+    # always keep geometry
+    gdf = gdf.loc[:, [c for c in cols_keep if c in gdf.columns] + ['geometry']]
 
-    latest_names = set(measured['name']) if not measured.empty else set()
-
-    # Unmeasured or missing requested names (for info)
-    unmeasured = (df[~df['name'].isin(latest_names)]
-                    .sort_values(['name', 'date_parsed', 'date'])
-                    .groupby('name', as_index=False, sort=False)
-                    .tail(1)
-                    .drop(columns=['x_num', 'y_num', 'measured'], errors='ignore'))
-
-    if keep_names and wanted is not None:
-        have_keys = set(df['_key'].unique())
-        missing_keys = sorted(list(wanted - have_keys))
-        if missing_keys:
-            backmap = {(n.upper() if case_insensitive else n): n for n in keep}
-            extra = pd.DataFrame({'name': [backmap[k] for k in missing_keys],
-                                  'date': np.nan, 'x': np.nan, 'y': np.nan,
-                                  'status': 'not_found'})
-            unmeasured = (pd.concat([unmeasured, extra], ignore_index=True)
-                            .sort_values(['name', 'date'], na_position='last'))
-
-    # Build GeoDataFrame for measured
-    if measured.empty:
-        boreholes_gdf = gpd.GeoDataFrame(columns=['name','date','x','y','geometry'], crs=f"EPSG:{epsg}")
-    else:
-        cols_keep = ['name', 'date', 'x', 'y']
-        for extra in ('depth_m', 'chain_logger', 'chain_length_m'):
-            if extra in measured.columns:
-                cols_keep.append(extra)
-        boreholes_gdf = gpd.GeoDataFrame(
-            measured.rename(columns={'x_num':'x', 'y_num':'y'})[cols_keep].assign(
-                x=measured['x_num'].values, y=measured['y_num'].values
-            ),
-            geometry=[Point(xy) for xy in zip(measured['x_num'], measured['y_num'])],
-            crs=f"EPSG:{epsg}"
-        )
-        # Ensure consistency
-        boreholes_gdf['x'] = boreholes_gdf.geometry.x
-        boreholes_gdf['y'] = boreholes_gdf.geometry.y
-        boreholes_gdf = boreholes_gdf.loc[:, ~boreholes_gdf.columns.duplicated()]
-
-    # Cleanup helper col
-    for c in ('_key',):
-        if c in df.columns:
-            df = df.drop(columns=[c])
-
-    return boreholes_gdf, unmeasured
+    # reset index and return
+    gdf = gdf.reset_index(drop=True)
+    return gdf, missing
     
 def _to_float(val: str):
     if val is None:
