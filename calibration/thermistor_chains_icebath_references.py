@@ -1,7 +1,7 @@
 import os
 
 # import thermistor chain processing functions
-os.chdir('/Users/janoschbeer/Library/Mobile Documents/com~apple~CloudDocs/PhD/projects/asses_swiss_gl_therm_regimes/processing')
+os.chdir('/Users/janoschbeer/Library/Mobile Documents/com~apple~CloudDocs/PhD/projects/polythermal_swiss_glaciers/processing')
 from thermistor_processing import ThermistorData
 
 # create a ThermistorData object
