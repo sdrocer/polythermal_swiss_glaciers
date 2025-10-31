@@ -9,7 +9,7 @@ from scipy.interpolate import Rbf
 from pykrige.ok import OrdinaryKriging
 
 import os
-os.chdir('/Users/janoschbeer/Library/Mobile Documents/com~apple~CloudDocs/PhD/projects/asses_swiss_gl_therm_regimes/')
+os.chdir('/Users/janoschbeer/Library/Mobile Documents/com~apple~CloudDocs/PhD/projects/polythermal_swiss_glaciers/')
 from calibration.thermistor_calibration import *
 import calibration.thermistor_chains_icebath_references
 
@@ -769,7 +769,7 @@ def interpolate_glacier_temperature_field_2d(
     """
     import numpy as np
     from scipy.interpolate import Rbf
-    
+
     # Get profile geometry
     d = profile_df['distance'].to_numpy()
     z_s = profile_df['zsurf'].to_numpy() 
@@ -783,7 +783,7 @@ def interpolate_glacier_temperature_field_2d(
         name = bh_row['name']
         bh_x = float(str(bh_row['x']).replace(',', '.'))
         bh_y = float(str(bh_row['y']).replace(',', '.'))
-        
+
         # Find borehole position along profile
         if 'x' in profile_df and 'y' in profile_df:
             profile_xy = np.column_stack([profile_df['x'], profile_df['y']])
