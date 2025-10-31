@@ -3,24 +3,32 @@ import matplotlib.pyplot as plt
 import geopandas as gpd
 import numpy as np
 import re
+import os
+
+from shapely.vectorized import contains
 
 from matplotlib.figure import Figure
 from matplotlib.patches import Rectangle
 from matplotlib.gridspec import GridSpec
+from matplotlib.ticker import MultipleLocator
 from matplotlib.lines import Line2D
 import cmcrameri.cm as cmc
 from PIL import Image
 from pathlib import Path
 from typing import Union, Sequence
 
+import subprocess
+
 # Import required geodata helpers (centralized in download_geodata.py)
-from processing.download_geodata import (
+from processing.geodata_download import (
     SWISS_CRS,
     download_swisstopo_wms,
     _load_vector,
     _points_to_gdf
 )
 
+import gpr_plotting as gprp
+from processing.geodata_processing import *
 
 def plot_switzerland_glacier_overview(
     *,
@@ -50,7 +58,7 @@ def plot_switzerland_glacier_overview(
     upscale_interpolation: str = "lanczos",
     verbose_wms: bool = True,
     annotate_field_sites: bool = True,
-    field_site_label_fontsize: int = 18,   # match ABBR_FONTSIZE
+    field_site_label_fontsize: int = 18,
     field_site_label_color: str = "black",
     field_site_label_weight: str = "bold",
     field_site_label_offset: tuple[float, float] | None = None,
@@ -61,21 +69,15 @@ def plot_switzerland_glacier_overview(
     field_site_label_line: bool = True,
     field_site_label_line_color: str = "black",
     field_site_label_line_width: float = 1.5,
-    field_site_label_line_anchor: dict | None = None,  # NEW: per-site anchor ("ur", "ll", etc.)
-    cut_to_country_outline: bool = False,
+    field_site_label_line_anchor: dict | None = None,
+    transparent_background: bool = False,
 ):
-    """
-    Switzerland glacier overview.
-    Downloads WMS layers from Swisstopo and composes a map with glaciers, lakes, cantonal and national borders.
-    """
     try:
         plt.rcParams["font.family"] = font_family
     except Exception:
         pass
 
-    # Helper: get anchor offset for label box
     def _anchor_offset(anchor, box_w, box_h):
-        # anchor: "ul"=upper left, "ur"=upper right, "ll"=lower left, "lr"=lower right, "c"=center
         if anchor == "ul":
             return (0, box_h)
         elif anchor == "ur":
@@ -87,17 +89,15 @@ def plot_switzerland_glacier_overview(
         elif anchor == "c":
             return (box_w/2, box_h/2)
         else:
-            return (0, box_h)  # default upper left
+            return (0, box_h)
 
     full_bbox = (2420000, 1030000, 2900000, 1350000)
 
     import PIL.Image as _PILImage
     from PIL import UnidentifiedImageError
 
-    # --- UPDATED download helper with dimension clamp + fallback ladder ---
     def _download(layer_id, bbox):
-        target_px = pixel_size  # initial desired ground resolution (m/pixel)
-
+        target_px = pixel_size
         def _compute_dims(px_size):
             w_m = bbox[2] - bbox[0]
             h_m = bbox[3] - bbox[1]
@@ -108,16 +108,14 @@ def plot_switzerland_glacier_overview(
                 scale = max(w_px / max_wms_dim, h_px / max_wms_dim)
                 w_px = int(round(w_px / scale))
                 h_px = int(round(h_px / scale))
-            return w_px, h_px, scale  # scale >1 means we shrank request
-
+            return w_px, h_px, scale
         tried = [target_px] + [ps for ps in fallback_pixel_sizes if ps != target_px]
         first_dims = None
         first_arr = None
         first_extent = None
-
         for i, px in enumerate(tried):
             w_px, h_px, clamp_scale = _compute_dims(px)
-            req_px_size = (bbox[2]-bbox[0]) / w_px  # actual ground pixel after clamp
+            req_px_size = (bbox[2]-bbox[0]) / w_px
             try:
                 arr, ext, _ = download_swisstopo_wms(
                     layer=layer_id,
@@ -126,16 +124,12 @@ def plot_switzerland_glacier_overview(
                     img_format="image/png",
                     transparent=True
                 )
-                # keep first successful (at target) or current
                 if i == 0:
                     first_arr, first_extent = arr, ext
                     first_dims = (w_px, h_px)
-                # If this is first attempt success OR we are on fallback and not upscaling:
                 if i == 0 or not upscale_to_first:
                     return arr, ext
-                # Need to upscale to first target dims
                 if upscale_to_first and first_dims:
-                    # upscale current arr to first_dims using PIL
                     im_mode = "RGBA" if arr.shape[2] == 4 else "RGB"
                     pil_im = _PILImage.fromarray(arr, mode=im_mode)
                     pil_im = pil_im.resize(first_dims, _PILImage.Resampling.LANCZOS if upscale_interpolation.lower()=="lanczos" else _PILImage.Resampling.BILINEAR)
@@ -145,15 +139,49 @@ def plot_switzerland_glacier_overview(
                 if verbose_wms:
                     print(f"WMS fail for {layer_id} at pixel_size≈{px} (requested dims ~{w_px}x{h_px}): {e}")
                 continue
-
-        # If all fallbacks failed but we captured first_arr before upscale logic
         if first_arr is not None:
             if verbose_wms:
                 print(f"Using degraded map for {layer_id} (only initial partial success).")
             return first_arr, first_extent
         raise RuntimeError(f"All WMS attempts failed for layer {layer_id}")
 
-    # Download
+    def _solid_fill(src_rgba, hex_color):
+        mask = src_rgba[..., 3] > 0
+        out = np.zeros_like(src_rgba)
+        if hex_color.startswith("#"):
+            r, g, b = [int(hex_color[i:i+2], 16) for i in (1, 3, 5)]
+        else:
+            r, g, b = (179, 217, 255)
+        out[mask, 0] = r; out[mask, 1] = g; out[mask, 2] = b; out[mask, 3] = 255
+        return out
+
+    def _extract_edge(mask: np.ndarray, width: int, use_scipy: bool = True):
+        if width < 1:
+            return np.zeros_like(mask, dtype=bool)
+        if use_scipy:
+            try:
+                from scipy.ndimage import binary_erosion, binary_dilation
+                eroded = binary_erosion(mask)
+                edge = mask & (~eroded)
+                if width > 1:
+                    edge = binary_dilation(edge, iterations=width - 1)
+                return edge
+            except Exception:
+                pass
+        up = np.zeros_like(mask); up[1:] = mask[:-1]
+        down = np.zeros_like(mask); down[:-1] = mask[1:]
+        left = np.zeros_like(mask); left[:, 1:] = mask[:, :-1]
+        right = np.zeros_like(mask); right[:, :-1] = mask[:, 1:]
+        edge = mask & (~(up & down & left & right))
+        for _ in range(max(0, width - 1)):
+            dil = edge.copy()
+            dil[:-1] |= edge[1:]
+            dil[1:] |= edge[:-1]
+            dil[:, :-1] |= edge[:, 1:]
+            dil[:, 1:] |= edge[:, :-1]
+            edge = dil
+        return edge
+
     canton_rgba, extent = _download(canton_layer, full_bbox)
     country_rgba, _ = _download(country_layer, full_bbox)
     glaciers_rgba, _ = _download(glacier_extent_layer, full_bbox)
@@ -164,7 +192,6 @@ def plot_switzerland_glacier_overview(
     px_w = (maxx - minx) / w
     px_h = (maxy - miny) / h
 
-    # Tight crop using country alpha
     if trim_whitespace:
         mask = country_rgba[..., 3] > 0
         rows = np.where(mask.any(axis=1))[0]
@@ -187,89 +214,58 @@ def plot_switzerland_glacier_overview(
             new_miny = maxy - (r1 + 1) * px_h
             extent = (new_minx, new_maxx, new_miny, new_maxy)
 
-    # Solid recolor
-    def _solid_fill(src_rgba, hex_color):
-        mask = src_rgba[..., 3] > 0
-        out = np.zeros_like(src_rgba)
-        if hex_color.startswith("#"):
-            r, g, b = [int(hex_color[i:i+2], 16) for i in (1, 3, 5)]
-        else:
-            r, g, b = (179, 217, 255)
-        out[mask, 0] = r; out[mask, 1] = g; out[mask, 2] = b; out[mask, 3] = 255
-        return out
+    swiss_gdf = gpd.read_file(
+        "/Users/janoschbeer/Library/Mobile Documents/com~apple~CloudDocs/PhD/projects/polythermal_swiss_glaciers/products/figures/maps/switzerland_shapefile/pays.shp"
+    ).to_crs(SWISS_CRS)
 
     glaciers_fill = _solid_fill(glaciers_rgba, glacier_color)
     lakes_fill = _solid_fill(lakes_rgba, lakes_color)
 
-    # ------------------------------------------------------------------
-    # Improved outline extraction (solid, no double edges)
-    # ------------------------------------------------------------------
-    def _extract_edge(mask: np.ndarray, width: int, use_scipy: bool = True):
-        """
-        Return a boolean edge mask (single rim, dilated to width).
-        mask: boolean polygon mask
-        width: target line thickness in pixels
-        """
-        if width < 1:
-            return np.zeros_like(mask, dtype=bool)
-        if use_scipy:
-            try:
-                from scipy.ndimage import binary_erosion, binary_dilation
-                eroded = binary_erosion(mask)
-                edge = mask & (~eroded)
-                if width > 1:
-                    edge = binary_dilation(edge, iterations=width - 1)
-                return edge
-            except Exception:
-                pass  # fall back if scipy missing
-        # Fallback (numpy shifts)
-        up = np.zeros_like(mask); up[1:] = mask[:-1]
-        down = np.zeros_like(mask); down[:-1] = mask[1:]
-        left = np.zeros_like(mask); left[:, 1:] = mask[:, :-1]
-        right = np.zeros_like(mask); right[:, :-1] = mask[:, 1:]
-        edge = mask & (~(up & down & left & right))
-        # Dilate rudimentarily
-        for _ in range(max(0, width - 1)):
-            dil = edge.copy()
-            dil[:-1] |= edge[1:]
-            dil[1:] |= edge[:-1]
-            dil[:, :-1] |= edge[:, 1:]
-            dil[:, 1:] |= edge[:, :-1]
-            edge = dil
-        return edge
+    h, w = canton_rgba.shape[:2]
+    minx, maxx, miny, maxy = extent
+    x = np.linspace(minx, maxx, w)
+    y = np.linspace(miny, maxy, h)
+    xx, yy = np.meshgrid(x, y)
+    mask = contains(swiss_gdf.geometry.unary_union, xx, yy)
+    mask = np.flipud(mask)
 
-    # Alpha threshold to ignore anti-alias fringe
+    if transparent_background:
+        white_country = np.zeros_like(canton_rgba)
+        white_country[..., 3] = 0
+        white_country[mask, 0:3] = 255
+        white_country[mask, 3] = 255
+        country_rgba = white_country
+
+
     alpha_thresh = 180
     canton_mask = canton_rgba[..., 3] >= alpha_thresh
     country_mask = country_rgba[..., 3] >= alpha_thresh
 
     country_edge = _extract_edge(country_mask, country_outline_width)
     canton_edge = _extract_edge(canton_mask, canton_outline_width)
-
-    # Remove national border part from canton edges to avoid double stroke
     canton_edge &= ~country_edge
 
     def _edge_to_rgba(edge_mask: np.ndarray) -> np.ndarray:
         out = np.zeros((edge_mask.shape[0], edge_mask.shape[1], 4), dtype=np.uint8)
-        out[edge_mask, 0:3] = 0  # black
+        out[edge_mask, 0:3] = 0
         out[edge_mask, 3] = 255
         return out
 
     canton_outline = _edge_to_rgba(canton_edge)
     country_outline = _edge_to_rgba(country_edge)
 
-    # Plot
-    fig, ax = plt.subplots(figsize=figsize, dpi=dpi)
-    ax.set_facecolor("white")
-    ax.imshow(glaciers_fill, extent=extent, origin="upper", zorder=1)
-    ax.imshow(canton_outline, extent=extent, origin="upper", zorder=2)
-    ax.imshow(country_outline, extent=extent, origin="upper", zorder=3)
-    ax.imshow(lakes_fill, extent=extent, origin="upper", zorder=4)
+    # Start plotting
+    fig, ax = plt.subplots(figsize=figsize, dpi=dpi, facecolor='none' if transparent_background else 'white')
+    ax.set_facecolor('none' if transparent_background else 'white')
+    ax.imshow(country_rgba, extent=extent, origin="upper", zorder=1)
+    ax.imshow(glaciers_fill, extent=extent, origin="upper", zorder=2)
+    ax.imshow(canton_outline, extent=extent, origin="upper", zorder=3)
+    ax.imshow(country_outline, extent=extent, origin="upper", zorder=4)
+    ax.imshow(lakes_fill, extent=extent, origin="upper", zorder=5)
 
-    # Cities
     if city_labels is None:
         city_labels = {
-            "Genève": (2483000, 1118000),
+            # "Genève": (2483000, 1118000),
             "Bern":   (2600500, 1196500),
             "Zürich": (2683000, 1244000)
         }
@@ -281,20 +277,17 @@ def plot_switzerland_glacier_overview(
                     name, ha="left", va="bottom",
                     fontsize=city_fontsize, color="black", zorder=11)
 
-    # Canton labels
     canton_labels = {
-        "VS": (2620000, 1125000),  # Valais
-        "GR": (2775000, 1190000),  # Graubünden
+        "VS": (2620000, 1125000),
+        "GR": (2765000, 1165000),
     }
     for label, (cx, cy) in canton_labels.items():
         if extent[0] <= cx <= extent[1] and extent[2] <= cy <= extent[3]:
             ax.text(cx, cy, label, ha="center", va="center",
                     fontsize=city_fontsize + 2, color="gray", weight="bold", style="italic", zorder=12)
 
-    # Glacier abbreviation colors
-    rect_colors = {"AH": "#1f77b4", "CJ": "#2ca02c", "HS": "#ff7f0e"}
+    # rect_colors = {"AH": "#1f77b4", "CJ": "#2ca02c", "HS": "#ff7f0e"}
 
-    # Field site markers
     if field_site_markers:
         if isinstance(field_site_markers, dict):
             coords_iter = field_site_markers.items()
@@ -308,7 +301,6 @@ def plot_switzerland_glacier_overview(
             if annotate_field_sites:
                 if field_site_label_box is None:
                     field_site_label_box = dict(boxstyle="round,pad=0.15", fc="white", ec="none", alpha=0.7)
-                # Base auto offset
                 if field_site_label_offset is None:
                     base_dx = (extent[1] - extent[0]) * 0.014
                     base_dy = (extent[3] - extent[2]) * 0.014
@@ -317,13 +309,11 @@ def plot_switzerland_glacier_overview(
                 for code, (fx, fy) in field_site_markers.items():
                     if not (extent[0] <= fx <= extent[1] and extent[2] <= fy <= extent[3]):
                         continue
-                    # Per-site override
                     if field_site_label_offsets and code in field_site_label_offsets:
                         dx, dy = field_site_label_offsets[code]
                     else:
                         dx, dy = base_dx, base_dy
-                    label_color = rect_colors.get(code, field_site_label_color)
-                    # Place label and get bbox
+                    label_color = 'k'
                     txt = ax.text(
                         fx + dx, fy + dy, code,
                         ha=field_site_label_ha,
@@ -334,7 +324,6 @@ def plot_switzerland_glacier_overview(
                         zorder=11,
                         bbox=dict(boxstyle="round,pad=0.15", fc="white", ec=label_color, alpha=0.7)
                     )
-                    # Force draw to update text position
                     fig.canvas.draw()
                     if field_site_label_line:
                         renderer = ax.figure.canvas.get_renderer()
@@ -358,19 +347,6 @@ def plot_switzerland_glacier_overview(
                     ax.scatter([fx], [fy], s=city_marker_size * 1.5,
                                zorder=10, color="red", marker="D", antialiased=False)
 
-    if cut_to_country_outline:
-        fig.canvas.draw()
-        arr = np.array(fig.canvas.renderer.buffer_rgba())
-        # Resize mask to match arr shape
-        from skimage.transform import resize
-        mask = country_rgba[..., 3] > 0
-        mask_resized = resize(mask.astype(float), arr.shape[:2], order=0, preserve_range=True) > 0.5
-        arr[..., 3][~mask_resized] = 0
-        ax.clear()
-        ax.imshow(arr, extent=extent, origin="upper")
-        ax.set_axis_off()
-
-    # Format
     ax.set_xlim(extent[0], extent[1])
     ax.set_ylim(extent[2], extent[3])
     ax.set_aspect("equal", adjustable="box")
@@ -378,7 +354,6 @@ def plot_switzerland_glacier_overview(
     for sp in ax.spines.values():
         sp.set_visible(False)
 
-    # Scale bar
     if show_scale:
         sb_len = scalebar_km * 1000
         x0 = extent[0] + (extent[1] - extent[0]) * 0.045
@@ -396,7 +371,7 @@ def plot_switzerland_glacier_overview(
         fig.savefig(savefig_path, dpi=300, bbox_inches="tight", pad_inches=0.1)
         print(f"Figure saved to: {savefig_path}")
 
-    return fig, ax
+    return fig, ax, extent
 
 def _figure_to_array(fig, dpi=None):
     """Render a Matplotlib Figure to RGBA numpy array."""
@@ -721,9 +696,6 @@ def build_glacier_map_mosaic(
 
     return fig
 
-abbr = {"Alphubel": "AH", "Chessjen": "CJ", "Hohsaas": "HS"}
-rect_colors = {"AH": "#1f77b4", "CJ": "#2ca02c", "HS": "#ff7f0e"}
-
 def build_tyntag_timeseries_one_row(
     *,
     order: tuple[str, str, str],
@@ -859,7 +831,7 @@ def build_tyntag_timeseries_one_row(
 def _add_corner_label(ax, text, fontsize=16, box=None):  # default +4
     if box is None:
         box = dict(facecolor="white", edgecolor="none", alpha=0.7, pad=1.0)
-    ax.text(0.01, 0.985, text,
+    ax.text(0.01, 0.985, f"({text})",
             transform=ax.transAxes,
             ha="left", va="top",
             fontsize=fontsize, weight="bold",
@@ -962,3 +934,609 @@ def compose_icetemp_and_vertical_profiles(
         fig.savefig(savefig_path, dpi=dpi, bbox_inches="tight", pad_inches=0.01)
 
     return fig, {"A": axA, "B": axB}
+
+def format_axes_coords(ax, x_step=5000, y_step=5000, thousands="'", decimals=0):
+    """
+    Format axes ticks for Swiss coordinates (LV95) with thousands separator.
+    """
+    def fmt(val, pos):
+        sval = f"{int(round(val)):,}".replace(",", thousands)
+        return f"{sval}"
+    ax.xaxis.set_major_locator(plt.MultipleLocator(x_step))
+    ax.yaxis.set_major_locator(plt.MultipleLocator(y_step))
+    ax.xaxis.set_major_formatter(fmt)
+    ax.yaxis.set_major_formatter(fmt)
+
+def plot_cropped_map_with_grid(
+    image_path, extent, crop_top_px=0, crop_bottom_px=0, grid_interval_km=10, fontsize=12, ax=None,
+    xlabel=True, ylabel=True
+):
+    """
+    Crop a map image from the top/bottom, update extent, and plot with Swiss-style axes and grid.
+
+    Args:
+        image_path (str or Path): Path to PNG image (from plot_switzerland_glacier_overview).
+        extent (tuple): (minx, maxx, miny, maxy) in map coordinates.
+        crop_top_px (int): Number of pixels to crop from the top.
+        crop_bottom_px (int): Number of pixels to crop from the bottom.
+        grid_interval_km (int): Grid spacing in kilometers.
+        ax (matplotlib.axes.Axes, optional): Axes to plot on. If None, creates new fig/ax.
+        xlabel (bool): Whether to show x-axis label.
+        ylabel (bool): Whether to show y-axis label.
+    """
+    img = Image.open(image_path)
+    arr = np.array(img)
+    h, w = arr.shape[0], arr.shape[1]
+
+    # Crop from top and/or bottom
+    y0 = crop_top_px
+    y1 = h - crop_bottom_px
+    arr_cropped = arr[y0:y1, :, :]
+
+    # Update extent based on cropping
+    minx, maxx, miny, maxy = extent
+    px_h = (maxy - miny) / h
+    new_maxy = maxy - y0 * px_h
+    new_miny = miny + crop_bottom_px * px_h
+    new_extent = (minx, maxx, new_miny, new_maxy)
+
+    # Calculate aspect ratio from extent
+    map_width = new_extent[1] - new_extent[0]
+    map_height = new_extent[3] - new_extent[2]
+    aspect = map_width / map_height
+    base_height = 7  # or any preferred height
+    figsize = (base_height * aspect, base_height)
+
+    if ax is None:
+        fig, ax = plt.subplots(figsize=figsize)
+    else:
+        fig = ax.figure
+
+    ax.imshow(arr_cropped, extent=new_extent, origin="upper")
+    ax.set_xlim(new_extent[0], new_extent[1])
+    ax.set_ylim(new_extent[2], new_extent[3])
+    ax.set_aspect('equal')
+
+    # Format axes ticks and labels
+    format_axes_coords(
+        ax,
+        x_step=grid_interval_km * 1000,
+        y_step=grid_interval_km * 1000,
+        thousands="'",
+        decimals=0
+    )
+    ax.tick_params(axis='both', which='both', direction='out', pad=2.0, labelsize=8)
+    for lbl in ax.get_yticklabels():
+        lbl.set_rotation(90)
+        lbl.set_verticalalignment('center')
+
+    if xlabel:
+        ax.set_xlabel("Easting (LV95) [m]", labelpad=8, fontsize=fontsize)
+    else:
+        ax.set_xlabel("")
+    if ylabel:
+        ax.set_ylabel("Northing (LV95) [m]", labelpad=10, fontsize=fontsize)
+    else:
+        ax.set_ylabel("")
+
+    # Only save/show if we created a new figure
+    if ax is None:
+        fig.savefig(image_path, dpi=300, bbox_inches="tight")
+        plt.show()
+
+    return fig, ax, new_extent
+
+def hide_edge_map_labels(ax, margin_frac=0.02):
+    import re
+    pat_dem   = re.compile(r"^\d+(?:\.\d+)?\s*m$")
+    pat_coord = re.compile(r"^\d{4,}(?:'\d{3})+\s*m$")
+    x0, x1 = ax.get_xlim(); y0, y1 = ax.get_ylim()
+    dx, dy = x1 - x0, y1 - y0
+    xm0, xm1 = x0 + dx*margin_frac, x1 - dx*margin_frac
+    ym0, ym1 = y0 + dy*margin_frac, y1 - dy*margin_frac
+    for t in list(ax.texts):
+        s = t.get_text().strip()
+        if not (pat_dem.match(s) or pat_coord.match(s)):
+            continue
+        tx, ty = t.get_position()
+        if tx < xm0 or tx > xm1 or ty < ym0 or ty > ym1:
+            t.set_visible(False)
+
+# Glacier abbreviations and colors
+abbr = {"Alphubel": "AH", "Chessjen": "CJ", "Hohsaas": "HS", "Sex Rouge": "SR", "Tortin": "GT", "Corvatsch": "CV"}
+rect_colors = {"AH": "#1f77b4", "CJ": "#2ca02c", "HS": "#ff7f0e", "SR": "#d62728", "GT": "#9467bd", "CT": "#8c564b"}
+
+def draw_glacier_map(
+    ax, ortho_path, bbox, gdf_pts, dem_tiles, boreholes, title,
+    ANNO_FONTSIZE, ABBR_FONTSIZE,
+    add_label_color=False, xlabel=True, ylabel=True, panel=None,
+    background="ortho",                       # "ortho" | "hillshade"
+    highlight_ids: Union[int, Sequence[int], None] = None,
+    highlight_color: str = "crimson",
+    highlight_size: float = 12.0,
+    annotations: dict | None = None,
+    outlines: gpd.GeoDataFrame | str | None = None,   # NEW: GeoDataFrame or path to file (or DataFrame-like with 'geometry' column)
+    outline_color: str | None = None,                # optional override color for outline
+    outline_linewidth: float = 2.0,
+    outline_alpha: float = 0.85
+):
+    """
+    Draw a single glacier map on `ax`.
+
+    - draws orthophoto or hillshade background
+    - plots DEM contours, GPR points, boreholes
+    - optionally highlights specific GPR profile(s) and annotates profiles
+    - optionally overlays glacier outline(s) (GeoDataFrame or path)
+
+    outlines may be:
+      - a GeoDataFrame with a 'geometry' column,
+      - a path to a vector file readable by geopandas,
+      - a pandas-like DataFrame with a 'geometry' column containing shapely geometries or WKT strings.
+
+    Note: default outline color is black ('k') unless an explicit outline_color is provided.
+    """
+    if outline_color is None:
+        outline_color = 'k'
+    plt.rcParams['font.family'] = 'Arial'
+
+    hs_kwargs = getattr(draw_glacier_map, "_hillshade_defaults", None) or {}
+    hs_kwargs.pop("background", None)
+
+    # Get orthophoto extent using imshow_tif
+    ortho_extent = imshow_tif(ax, ortho_path)  # returns (minx, maxx, miny, maxy)
+
+    # extent ortho extent by 15 m towards the east otherwise weird black stripes occur
+    ortho_extent = (
+        ortho_extent[0],
+        ortho_extent[1] + 15.0,
+        ortho_extent[2],
+        ortho_extent[3]
+    )
+
+    # Background logic
+    if background in ("hillshade", "shade", "dem"):
+        hs_img = imshow_hillshade(ax, dem_tiles, plot_extent=ortho_extent, merge_bbox=bbox, **hs_kwargs)
+        try:
+            if hasattr(hs_img, "set_zorder"):
+                hs_img.set_zorder(5)
+        except Exception:
+            pass
+
+    elif background in ("ortho_hillshade", "ortho+hillshade", "ortho+hs"):
+        # Draw ortho first
+        imshow_tif(ax, ortho_path)
+        try:
+            if hasattr(ax.images[-1], "set_zorder"):
+                ax.images[-1].set_zorder(1)
+        except Exception:
+            pass
+
+        # Overlay hillshade on top with semi-transparency
+        hs_alpha = hs_kwargs.pop("alpha", 0.5)
+        hs_img = imshow_hillshade(ax, dem_tiles, plot_extent=ortho_extent, merge_bbox=bbox)
+        try:
+            if hs_img is not None and hasattr(hs_img, "set_alpha"):
+                hs_img.set_alpha(hs_alpha)
+                hs_img.set_zorder(4)
+            else:
+                ax.images[-1].set_alpha(hs_alpha)
+                ax.images[-1].set_zorder(4)
+        except Exception:
+            try:
+                ax.images[-1].set_alpha(hs_alpha)
+                ax.images[-1].set_zorder(4)
+            except Exception:
+                pass
+
+    else:
+        imshow_tif(ax, ortho_path)
+
+    # DEM contours
+    gprp.plot_dem_contours_from_tiles(
+        ax, dem_tiles, bbox=bbox, pixel_size=2.0,
+        minor_step=25.0, major_step=50.0,
+        minor_kwargs={'linewidths':0.25, 'colors':'k', 'alpha':0.9},
+        major_kwargs={'linewidths':0.6,  'colors':'k', 'alpha':1.0},
+        zorder_minor=6, zorder_major=7, label=True, label_fmt="%.0f m"
+    )
+    hide_edge_map_labels(ax, margin_frac=0.02)
+
+    # Optional glacier outlines (draw before GPR points so points stay visible)
+    if outlines is not None:
+        try:
+            # Accept path -> read with geopandas
+            if isinstance(outlines, (str, Path)):
+                gdf_outline = gpd.read_file(outlines)
+            elif isinstance(outlines, gpd.GeoDataFrame):
+                gdf_outline = outlines.copy()
+            else:
+                # DataFrame-like: ensure geometry column contains shapely geometries
+                gdf_outline = gpd.GeoDataFrame(outlines)
+                if 'geometry' in gdf_outline.columns:
+                    geom_col = gdf_outline['geometry']
+                    # convert WKT strings to geometries if needed
+                    if geom_col.dtype == object and any(isinstance(v, str) for v in geom_col.dropna().values):
+                        try:
+                            from shapely import wkt
+                            gdf_outline['geometry'] = gdf_outline['geometry'].apply(lambda s: wkt.loads(s) if isinstance(s, str) else s)
+                        except Exception:
+                            pass
+                    gdf_outline = gdf_outline.set_geometry('geometry', inplace=False)
+
+            # If no CRS provided but coords look like lon/lat, assume EPSG:4326
+            try:
+                if getattr(gdf_outline, "crs", None) is None:
+                    coords_sample = list(gdf_outline.geometry.dropna().head(3).apply(lambda g: list(g.bounds) if g is not None else None))
+                    flat = [c for b in coords_sample if b for c in b]
+                    if flat and all(-180.0 <= v <= 180.0 for v in flat):
+                        gdf_outline.set_crs(epsg=4326, inplace=True)
+            except Exception:
+                pass
+
+            # Reproject to LV95 (2056) if needed
+            try:
+                if hasattr(gdf_outline, "crs") and gdf_outline.crs is not None:
+                    if getattr(gdf_outline.crs, 'to_epsg', lambda: None)() != 2056:
+                        gdf_outline = gdf_outline.to_crs(epsg=2056)
+            except Exception:
+                pass
+
+            # Clean / fix invalid geometries and optionally simplify a little
+            try:
+                gdf_outline['geometry'] = gdf_outline.geometry.apply(lambda g: (g.buffer(0) if (g is not None and not g.is_valid) else g))
+            except Exception:
+                pass
+
+            # Clip to bbox to avoid drawing long spurious lines
+            try:
+                from shapely.geometry import box as _box
+                clip_box = _box(x0 := bbox[0], y0 := bbox[1], x1 := bbox[2], y1 := bbox[3])
+                gdf_outline['geom_clipped'] = gdf_outline.geometry.apply(lambda g: g.intersection(clip_box) if g is not None else None)
+                # keep only non-empty geometries
+                gdf_plot = gpd.GeoDataFrame(geometry=gdf_outline['geom_clipped'])
+                gdf_plot = gdf_plot[~gdf_plot.geometry.is_empty & gdf_plot.geometry.notna()]
+                if gdf_plot.empty:
+                    # if clipping removed everything, fall back to full geometries (but still cleaned)
+                    gdf_plot = gpd.GeoDataFrame(geometry=gdf_outline.geometry.dropna())
+            except Exception:
+                gdf_plot = gdf_outline.copy()
+
+            # Filter tiny slivers (area for polygons, length for lines)
+            try:
+                def _keep_geom(g):
+                    if g is None or g.is_empty:
+                        return False
+                    from shapely.geometry import Polygon, MultiPolygon, LineString, MultiLineString
+                    if isinstance(g, (Polygon, MultiPolygon)):
+                        return g.area > 1.0  # keep polygons > 1 m^2
+                    if isinstance(g, (LineString, MultiLineString)):
+                        return g.length > 1.0  # keep lines > 1 m
+                    return True
+                gdf_plot = gdf_plot[gdf_plot.geometry.apply(_keep_geom)]
+            except Exception:
+                pass
+
+            # Determine color: override param -> rect_colors by title abbreviation -> fallback 'k'
+            outline_color_use = outline_color if outline_color is not None else rect_colors.get(abbr.get(title, title[:2].upper()), '#000000')
+
+            # Prepare line segments for plotting (avoid polygon-filling or unexpected connectors)
+            try:
+                from shapely.geometry import Polygon, MultiPolygon, LineString, MultiLineString, GeometryCollection
+                from matplotlib.collections import LineCollection
+                segs = []
+                for geom in gdf_plot.geometry:
+                    if geom is None or geom.is_empty:
+                        continue
+                    # geometry collections: extract contained polygons/lines
+                    if isinstance(geom, GeometryCollection):
+                        geoms = [g for g in geom.geoms]
+                    else:
+                        geoms = [geom]
+                    for g in geoms:
+                        if isinstance(g, (Polygon, MultiPolygon)):
+                            # handle multipolygon by iterating polygons
+                            if isinstance(g, MultiPolygon):
+                                parts = list(g.geoms)
+                            else:
+                                parts = [g]
+                            for p in parts:
+                                # append exterior ring only (no fill) to avoid interior odd lines
+                                ext = p.exterior
+                                segs.append(list(ext.coords))
+                                # optionally plot interiors (holes) as dashed
+                                for interior in p.interiors:
+                                    segs.append(list(interior.coords))
+                        elif isinstance(g, (LineString, MultiLineString)):
+                            if isinstance(g, MultiLineString):
+                                for part in g.geoms:
+                                    segs.append(list(part.coords))
+                            else:
+                                segs.append(list(g.coords))
+                        else:
+                            # fallback: try to extract boundary
+                            try:
+                                b = g.boundary
+                                if not b.is_empty:
+                                    if hasattr(b, "__iter__"):
+                                        for part in b:
+                                            segs.append(list(part.coords))
+                                    else:
+                                        segs.append(list(b.coords))
+                            except Exception:
+                                continue
+
+                if segs:
+                    # create LineCollection; interiors (holes) can be dashed for clarity
+                    lc = LineCollection(segs, colors=outline_color_use, linewidths=outline_linewidth, alpha=outline_alpha, zorder=11, linestyles=':')
+                    ax.add_collection(lc)
+            except Exception:
+                # fallback: use GeoDataFrame plotting (last resort)
+                try:
+                    gdf_plot.plot(ax=ax, facecolor='none', edgecolor=outline_color_use, linewidth=outline_linewidth, alpha=outline_alpha, zorder=11, linestyle=':')
+                except Exception:
+                    pass
+
+        except Exception:
+            # don't fail the whole plot if outlines can't be parsed
+            pass
+
+    # Draw all GPR points (base layer) -- ensure fully opaque and on top of hillshade
+    gprp.draw_gpr_line_points(ax, gdf_pts, size=3, color='k', alpha=1.0, zorder=8)
+
+    # If highlight_ids provided, draw them on top explicitly (robust regardless of gprp implementation)
+    if highlight_ids is not None:
+        if isinstance(highlight_ids, (int, np.integer)):
+            hids = [int(highlight_ids)]
+        else:
+            hids = [int(h) for h in highlight_ids]
+        # subset points belonging to highlighted profiles
+        try:
+            sub = gdf_pts[gdf_pts['profile'].isin(hids)]
+        except Exception:
+            sub = gdf_pts[gdf_pts.get('profile', -999).astype(int).isin(hids)] if 'profile' in gdf_pts.columns else gdf_pts.iloc[0:0]
+        if not sub.empty:
+            ax.scatter(
+                sub.geometry.x, sub.geometry.y,
+                s=highlight_size, marker='o',
+                facecolor=highlight_color, edgecolor='black',
+                linewidths=0.8, zorder=10, alpha=1.0
+            )
+
+    # Annotation helper: replicate notebook-style PCA ordering and place label
+    def _annotate_profile(ax_local, gdf_pts_local, profile_id, text=None, where='mid',
+                          offset_pts=(3, 3), color=None, fontsize=None, bg=True, zorder=30):
+        if 'profile' not in gdf_pts_local.columns:
+            return None
+        sub = gdf_pts_local[gdf_pts_local['profile'] == profile_id]
+        if sub.empty:
+            return None
+        coords = np.c_[sub.geometry.x.values, sub.geometry.y.values]
+        if coords.shape[0] < 2:
+            idx = 0
+        else:
+            mean = coords.mean(0)
+            _, _, Vt = np.linalg.svd(coords - mean, full_matrices=False)
+            t = (coords - mean) @ Vt[0]
+            order = np.argsort(t)
+            if where == 'start':
+                idx = order[0]
+            elif where == 'end':
+                idx = order[-1]
+            else:
+                idx = order[len(order)//2]
+        x, y = coords[idx]
+        if color is None:
+            color = 'crimson'
+        if fontsize is None:
+            fontsize = ANNO_FONTSIZE
+        if offset_pts is None:
+            offset_pts = (3, 3)
+        tr = plt.transforms.offset_copy(ax_local.transData, fig=ax_local.figure, x=offset_pts[0], y=offset_pts[1], units='points')
+        if text is None:
+            text = f"P{profile_id}"
+        bbox = dict(boxstyle='round,pad=0.15', fc='white', ec='none', alpha=1.0) if bg else None
+        return ax_local.text(x, y, text, color=color, fontsize=fontsize, ha='left', va='bottom',
+                             transform=tr, zorder=zorder, bbox=bbox)
+
+    # Handle annotations dict (profile_id -> opts)
+    if annotations:
+        # prefer gprp.annotate_gpr_profile if available
+        annot_fn = getattr(gprp, "annotate_gpr_profile", None)
+        for pid, opts in annotations.items():
+            if callable(annot_fn):
+                try:
+                    # many implementations expect (ax, gdf_pts, profile_id, **opts)
+                    annot_fn(ax, gdf_pts, pid, **(opts or {}))
+                except Exception:
+                    # fallback to internal helper
+                    try:
+                        _annotate_profile(ax, gdf_pts, pid, **(opts or {}))
+                    except Exception:
+                        pass
+            else:
+                try:
+                    _annotate_profile(ax, gdf_pts, pid, **(opts or {}))
+                except Exception:
+                    pass
+
+    # Boreholes + labels
+    if (boreholes is not None) and (not boreholes.empty):
+        for _, r in boreholes.iterrows():
+            if isinstance(r.get('name', ''), str) and r['name'].endswith('G'):
+                bh_color = 'red'
+            elif isinstance(r.get('name', ''), str) and r['name'].endswith('TT'):
+                bh_color = 'white'
+            else:
+                bh_color = 'white'
+            ax.scatter(r.geometry.x, r.geometry.y,
+                       s=40, marker='o', color=bh_color, edgecolors='black',
+                       linewidths=1, alpha=0.95, zorder=9, label='Boreholes')
+            txt_va = 'top' if ((title == "Chessjen" and r.get('name') == "CJ1G") or (title == "Hohsaas" and r.get('name') == "HS3G")) else 'bottom'
+            ax.text(r.geometry.x, r.geometry.y, r.get('name', ''),
+                    fontsize=ANNO_FONTSIZE-2, color='k', ha='left', va=txt_va,
+                    bbox=dict(boxstyle='round,pad=0.15', fc='white', ec='none', alpha=0.65),
+                    zorder=10)
+
+    # Limits & formatting
+    x0, y0, x1, y1 = bbox
+    ax.set_xlim(x0, x1); ax.set_ylim(y0, y1)
+    gprp.format_axes_coords(ax, x_step=200, y_step=200, thousands='apostrophe', unit='m', decimals=0)
+    ax.xaxis.set_major_locator(MultipleLocator(200))
+    ax.tick_params(axis='both', which='both', direction='out', pad=1.0, labelsize=8)
+    for lbl in ax.get_yticklabels():
+        lbl.set_rotation(90); lbl.set_verticalalignment('center')
+
+    if xlabel:
+        ax.set_xlabel("Easting (LV95) [m]", labelpad=2, fontsize=ANNO_FONTSIZE)
+    if ylabel:
+        ax.set_ylabel("Northing (LV95) [m]", labelpad=2, fontsize=ANNO_FONTSIZE)
+
+    ax.set_aspect('equal')
+    ax.set_box_aspect(1)
+
+    # Abbreviation tag (use color if requested)
+    default_abbr = abbr.get(title, (title.split()[0][:2].upper() if isinstance(title, str) and title else ""))
+    label_abbr = default_abbr
+    label_color = rect_colors.get(label_abbr, 'k') if add_label_color else 'k'
+    ax.text(0.02, 0.02, label_abbr, transform=ax.transAxes,
+            ha='left', va='bottom', fontsize=ABBR_FONTSIZE, fontweight='bold',
+            color=label_color,
+            bbox=dict(boxstyle='round,pad=0.15', fc='white', ec=label_color, alpha=0.7),
+            zorder=20)
+
+    # Panel label
+    if panel:
+        ax.text(
+            0.02, 0.98, f"({panel})",
+            transform=ax.transAxes,
+            ha='left', va='top',
+            fontsize=ABBR_FONTSIZE, fontweight='bold',
+            color='black', zorder=21,
+            bbox=dict(boxstyle='round,pad=0.15', fc='white', ec='none', alpha=1.0)
+        )
+
+    # Color-code axes spines and ticks to match glacier color
+    for spine in ax.spines.values():
+        spine.set_edgecolor(label_color)
+        spine.set_linewidth(1.2)
+    ax.tick_params(axis='both', colors=label_color)
+
+def compress_figure_inplace(input_path, max_size_mb=5):
+    """
+    Compress a PDF or PNG figure so the output file size is ≤ max_size_mb.
+    Overwrites the input file.
+
+    Adjusted to be less aggressive to avoid visible pixelation:
+      - PNG: prefer lossless optimizations and quantization before resizing;
+             limit downscaling and use smaller steps.
+      - PDF: try higher-quality Ghostscript presets first.
+    """
+    ext = str(input_path).lower().split('.')[-1]
+    max_bytes = int(max_size_mb * 1024 * 1024)
+
+    if ext == "png":
+        img = Image.open(input_path)
+        # ensure RGBA for consistent handling
+        if img.mode not in ("RGBA", "RGB"):
+            img = img.convert("RGBA")
+        w, h = img.size
+        tmp_path = str(input_path) + ".tmp.png"
+
+        # 1) Try optimized PNG write (lossless) first
+        img.save(tmp_path, optimize=True, compress_level=9)
+        if os.path.getsize(tmp_path) <= max_bytes:
+            os.replace(tmp_path, str(input_path))
+            print(f"Compressed file saved: {input_path}")
+            return input_path
+
+        # 2) Try mild quantization (preserve as many colors as possible)
+        for colors in (256, 192, 128):
+            try:
+                # quantize returns a P image which often saves smaller
+                q = img.convert("RGB").quantize(colors=colors, method=Image.FASTOCTREE)
+                q.save(tmp_path, optimize=True)
+                if os.path.getsize(tmp_path) <= max_bytes:
+                    os.replace(tmp_path, str(input_path))
+                    print(f"Compressed (quantized to {colors} colors) file saved: {input_path}")
+                    return input_path
+            except Exception:
+                continue
+
+        # 3) As last resort, downscale in small steps but stop earlier to avoid pixelation
+        min_width = 1200  # don't downscale below this to preserve detail
+        scale_step = 0.95  # mild downscale per iteration
+        while os.path.getsize(tmp_path) > max_bytes and w > min_width:
+            w = int(w * scale_step)
+            h = int(h * scale_step)
+            img = img.resize((w, h), Image.LANCZOS)
+            img.save(tmp_path, optimize=True, compress_level=9)
+            # try a quick quantize pass at moderate colors if needed
+            if os.path.getsize(tmp_path) > max_bytes:
+                try:
+                    q = img.convert("RGB").quantize(colors=192, method=Image.FASTOCTREE)
+                    q.save(tmp_path, optimize=True)
+                except Exception:
+                    pass
+
+        if os.path.getsize(tmp_path) <= max_bytes:
+            os.replace(tmp_path, str(input_path))
+            print(f"Compressed file saved: {input_path}")
+        else:
+            # keep the best-effort temporary file if smaller, otherwise keep original
+            final_size = os.path.getsize(tmp_path)
+            orig_size = os.path.getsize(str(input_path))
+            if final_size < orig_size:
+                os.replace(tmp_path, str(input_path))
+                print(f"Warning: Could not reach target size, saved smaller file: {input_path}")
+            else:
+                try:
+                    os.remove(tmp_path)
+                except Exception:
+                    pass
+                print(f"Warning: Could not compress below {max_size_mb} MB without heavy quality loss.")
+        return input_path
+
+    elif ext == "pdf":
+        # Use higher-quality GS presets first to avoid pixelation, fallback to smaller presets if needed
+        tmp_path = str(input_path) + ".tmp.pdf"
+        gs_cmd = [
+            "gs",
+            "-sDEVICE=pdfwrite",
+            "-dCompatibilityLevel=1.4",
+            "-dNOPAUSE",
+            "-dQUIET",
+            "-dBATCH",
+            f"-sOutputFile={tmp_path}",
+            str(input_path)
+        ]
+        # Try /prepress (higher quality), then /ebook, then /screen
+        for setting in ("/prepress", "/ebook", "/screen"):
+            cmd = gs_cmd[:]
+            cmd.insert(3, f"-dPDFSETTINGS={setting}")
+            try:
+                subprocess.run(cmd, check=True)
+            except Exception:
+                continue
+            if os.path.getsize(tmp_path) <= max_bytes:
+                break
+
+        if os.path.getsize(tmp_path) <= max_bytes:
+            os.replace(tmp_path, str(input_path))
+            print(f"Compressed file saved: {input_path}")
+        else:
+            # keep best effort if smaller, else remove tmp
+            try:
+                final_size = os.path.getsize(tmp_path)
+                orig_size = os.path.getsize(str(input_path))
+                if final_size < orig_size:
+                    os.replace(tmp_path, str(input_path))
+                    print(f"Warning: Could not reach target size, saved smaller PDF: {input_path}")
+                else:
+                    os.remove(tmp_path)
+                    print(f"Warning: Could not compress below {max_size_mb} MB.")
+            except Exception:
+                print("Warning: Ghostscript run failed or tmp file missing.")
+        return input_path
+
+    else:
+        raise ValueError("Only PNG and PDF files are supported.")
