@@ -311,3 +311,77 @@ def read_xyzn_to_gdf(path: str, crs: Optional[int] = 2056) -> gpd.GeoDataFrame:
             # leave CRS unset if invalid
             pass
     return gdf
+
+def geometric_properties_from_xyzn_demtiles(xyzn_path, dem_tile_paths):
+    """
+    Calculate area, min/max elevation, min/max/mean slope for an outline in .xyzn,
+    using elevations sampled from a list of DEM GeoTIFF tiles.
+    """
+    xs, ys = [], []
+    with open(xyzn_path, 'r') as fh:
+        for line in fh:
+            parts = line.strip().split()
+            if len(parts) < 2:
+                continue
+            try:
+                x, y = float(parts[0]), float(parts[1])
+                xs.append(x)
+                ys.append(y)
+            except Exception:
+                continue
+
+    coords = np.column_stack([xs, ys])
+    polygon = Polygon(coords)
+    area = polygon.area
+
+    # Mosaic DEM tiles
+    srcs = [rasterio.open(p) for p in dem_tile_paths]
+    mosaic, out_trans = merge(srcs)
+    dem_arr = mosaic[0]
+    dem_nodata = srcs[0].nodata
+    dem_crs = srcs[0].crs
+    for s in srcs:
+        s.close()
+
+    # Sample DEM at each XY location
+    dem_elevs = []
+    for x, y in zip(xs, ys):
+        # Convert map coordinates to row/col in mosaic
+        col, row = ~out_trans * (x, y)
+        col, row = int(round(col)), int(round(row))
+        if 0 <= row < dem_arr.shape[0] and 0 <= col < dem_arr.shape[1]:
+            val = dem_arr[row, col]
+            if dem_nodata is not None and val == dem_nodata:
+                continue
+            if val < -9999 or np.isnan(val):
+                continue
+            dem_elevs.append(val)
+    dem_elevs = np.array(dem_elevs)
+
+    min_elev = float(np.min(dem_elevs)) if dem_elevs.size else np.nan
+    max_elev = float(np.max(dem_elevs)) if dem_elevs.size else np.nan
+
+    # Slope calculation: between consecutive points
+    slopes = []
+    for i in range(1, len(xs)):
+        dx = xs[i] - xs[i-1]
+        dy = ys[i] - ys[i-1]
+        dz = dem_elevs[i] - dem_elevs[i-1] if i < len(dem_elevs) else 0
+        horiz_dist = np.hypot(dx, dy)
+        if horiz_dist > 0:
+            slope_deg = np.degrees(np.arctan2(dz, horiz_dist))
+            slopes.append(slope_deg)
+    slopes = np.abs(np.array(slopes))  # <-- Use absolute steepness
+
+    min_slope = float(np.min(slopes)) if slopes.size else np.nan
+    max_slope = float(np.max(slopes)) if slopes.size else np.nan
+    mean_slope = float(np.mean(slopes)) if slopes.size else np.nan
+
+    return {
+        "area": area,
+        "min_elevation": min_elev,
+        "max_elevation": max_elev,
+        "min_slope_deg": min_slope,
+        "max_slope_deg": max_slope,
+        "mean_slope_deg": mean_slope,
+    }

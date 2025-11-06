@@ -1016,7 +1016,6 @@ def _draw_panel_tag(ax, text, loc="TR", *, bbox=True, tag_kwargs=None, pad_pt=8,
     ax.text(x, y, str(text), bbox=bbox_props, **tk)
 
 ## Main function to plot ice temperature profile ----
-
 def plot_icetemp_profile(
     profile_df,
     borehole_coords_df,
@@ -1058,6 +1057,9 @@ def plot_icetemp_profile(
     tag_loc: str = "TR",
     tag_bbox: bool | dict = True,
     tag_kwargs: dict | None = None,
+    export_txt_path: str = None,
+    export_borehole_txt_path: str = None,  # <-- NEW ARGUMENT
+    continuous_cmap: bool = False,  # <-- NEW ARGUMENT
     **deprecated
 ):
     """
@@ -1068,6 +1070,7 @@ def plot_icetemp_profile(
     - bh_marker_size / bh_line_lw to control chain sizes
     - whiskers via bed_uncertainty* args
     - allow_bh_overlap/bh_edge_pad
+    - export_txt_path: path to save interpolated temperature matrix as TXT
     """
     for k in list(deprecated.keys()):
         print(f"[plot_icetemp_profile] Ignoring unknown/deprecated argument: {k}")
@@ -1077,6 +1080,8 @@ def plot_icetemp_profile(
     prof_flipped = prof.copy()
     clip_mask = None
     borehole_locs_for_pad = []
+
+    borehole_export_rows = []  # Collect borehole export data
 
     if borehole_clip_buffer is not None and float(borehole_clip_buffer) >= 0:
         prof_has_xy = ('x' in prof.columns) and ('y' in prof.columns)
@@ -1118,13 +1123,22 @@ def plot_icetemp_profile(
                 prof = prof.loc[clip_mask].reset_index(drop=True)
         borehole_locs_for_pad = bh_locs
 
-    # Color mapping (honor cbar_min)
+     # Color mapping (honor cbar_min)
     measured = _collect_measured_values(temp_data_dict)
     if cbar_min is not None:
         measured = np.append(measured, float(cbar_min))
     levels = _temperature_levels(measured, temp_step)
-    cmap = cmap or _discrete_icetemp_cmap_from_levels(levels)
-    norm = BoundaryNorm(levels, cmap.N, clip=True)
+
+    if continuous_cmap:
+        # Use continuous colormap and Normalize
+        cmap = cmap or cmc.vik
+        vmin = float(measured.min())
+        vmax = float(measured.max())
+        norm = plt.Normalize(vmin=vmin, vmax=vmax)
+    else:
+        # Use discrete colormap and BoundaryNorm
+        cmap = cmap or _discrete_icetemp_cmap_from_levels(levels)
+        norm = BoundaryNorm(levels, cmap.N, clip=True)
 
     # Prepare whisker uncertainty array
     unc_arr = None
@@ -1144,6 +1158,9 @@ def plot_icetemp_profile(
     fig, ax = (plt.subplots(figsize=(9, 5), dpi=300) if ax is None else (ax.figure, ax))
     segments = _segment_indices(dist, float(break_threshold))
     im = None; first_seg = True; cts_label_done = False
+
+    # For TXT export: only save for the first segment
+    txt_exported = False
 
     for (i0, i1) in segments:
         if i1 - i0 < 2:
@@ -1166,12 +1183,12 @@ def plot_icetemp_profile(
         T_masked = _mask_inside(T_seg, elevs_seg, xnodes_seg, zs_on_x, zb_on_x)
 
         im = ax.pcolormesh(_edges(xnodes_seg), _edges(elevs_seg), T_masked,
-                           cmap=cmap, norm=norm, shading='auto', alpha=0.85, zorder=1)
+                        cmap=cmap, norm=norm, shading='auto', alpha=0.85, zorder=1)
 
-        if plot_contours:
+        if plot_contours and not continuous_cmap:
             XX, YY = np.meshgrid(xnodes_seg, elevs_seg)
             ax.contour(XX, YY, T_masked, levels=levels[:-1],
-                       colors='k', linewidths=0.6, alpha=0.45, zorder=5)
+                    colors='k', linewidths=0.6, alpha=0.45, zorder=5)
 
         if show_cts:
             info = _extract_temperate_layers(
@@ -1197,6 +1214,27 @@ def plot_icetemp_profile(
                             fmt='none', ecolor=bed_unc_color, elinewidth=bed_unc_lw,
                             capsize=bed_unc_capsize, capthick=bed_unc_lw,
                             alpha=bed_unc_alpha, zorder=11, clip_on=False)
+
+        # Export TXT only for the first segment and only once
+        if export_txt_path is not None and not txt_exported:
+            try:
+                with open(export_txt_path, "w") as f:
+                    f.write("elev/distance\t" + "\t".join([f"{x:.2f}" for x in xnodes_seg]) + "\n")
+                    # FLIP: reverse elevs_seg and T_masked rows
+                    for k, elev in reversed(list(enumerate(elevs_seg))):
+                        row = [f"{elev:.2f}"]
+                        for j in range(len(xnodes_seg)):
+                            val = T_masked[k, j]
+                            if T_masked.mask[k, j]:
+                                row.append("nan")
+                            else:
+                                row.append(f"{val:.4f}")
+                        f.write("\t".join(row) + "\n")
+                print(f"[plot_icetemp_profile] Exported TXT to: {export_txt_path}")
+            except Exception as e:
+                print(f"[plot_icetemp_profile] Could not export TXT: {e}")
+            txt_exported = True
+
         first_seg = False
 
     # Boreholes
@@ -1235,6 +1273,16 @@ def plot_icetemp_profile(
         dep_arr = np.array([p[0] for p in pairs])
         t_arr   = np.array([p[1] for p in pairs])
 
+        # --- Collect for borehole export ---
+        for dd, tv in zip(dep_arr, t_arr):
+            borehole_export_rows.append({
+                "borehole": name,
+                "distance": loc,
+                "depth": dd,
+                "elevation": surf_elev - dd,
+                "temperature": tv
+            })
+
         ax.plot([loc, loc], [surf_elev - dep_arr.max(), surf_elev],
                 color='k', lw=bh_line_lw, zorder=20, clip_on=not allow_bh_overlap)
         for dd, tv in zip(dep_arr, t_arr):
@@ -1247,18 +1295,36 @@ def plot_icetemp_profile(
         ax.text(loc, surf_elev + 6, name, color=name_color, fontsize=10,
                 ha='center', va='bottom', zorder=22, clip_on=not allow_bh_overlap)
 
+    # Export borehole TXT if requested
+    if export_borehole_txt_path is not None and borehole_export_rows:
+        try:
+            import csv
+            with open(export_borehole_txt_path, "w", newline="") as f:
+                writer = csv.DictWriter(f, fieldnames=["borehole", "distance", "depth", "elevation", "temperature"])
+                writer.writeheader()
+                for row in borehole_export_rows:
+                    writer.writerow(row)
+            print(f"[plot_icetemp_profile] Exported borehole TXT to: {export_borehole_txt_path}")
+        except Exception as e:
+            print(f"[plot_icetemp_profile] Could not export borehole TXT: {e}")
+
     # Colorbar
     if im is not None:
-        step_for_ticks = float(cbar_tick_step) if cbar_tick_step else float(temp_step)
-        dec = _decimals(step_for_ticks)
-        lo_edge = float(levels.min())
-        ticks_desc = np.arange(0.0, lo_edge - 1e-12, -step_for_ticks)
-        cb = fig.colorbar(im, ax=ax, location='bottom', orientation='horizontal',
-                          fraction=0.08, pad=0.1, aspect=40, anchor=(0.5, 0.0))
-        cb.set_ticks(ticks_desc)
-        cb.set_ticklabels([f"{t:.{dec}f}" for t in ticks_desc])
-        cb.set_label('Ice Temperature [°C]')
-        cb.ax.invert_xaxis()
+        if continuous_cmap:
+            cb = plt.colorbar(im, ax=ax, location='bottom', orientation='horizontal',
+                              fraction=0.08, pad=0.1, aspect=40, anchor=(0.5, 0.0))
+            cb.set_label('Ice Temperature [°C]')
+        else:
+            step_for_ticks = float(cbar_tick_step) if cbar_tick_step else float(temp_step)
+            dec = _decimals(step_for_ticks)
+            lo_edge = float(levels.min())
+            ticks_desc = np.arange(0.0, lo_edge - 1e-12, -step_for_ticks)
+            cb = plt.colorbar(im, ax=ax, location='bottom', orientation='horizontal',
+                              fraction=0.08, pad=0.1, aspect=40, anchor=(0.5, 0.0))
+            cb.set_ticks(ticks_desc)
+            cb.set_ticklabels([f"{t:.{dec}f}" for t in ticks_desc])
+            cb.set_label('Ice Temperature [°C]')
+            cb.ax.invert_xaxis()
 
     # Corner panel tag: inside with offset and translucent box
     if panel_tag:

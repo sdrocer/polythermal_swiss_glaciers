@@ -27,7 +27,7 @@ from processing.geodata_download import (
     _points_to_gdf
 )
 
-import gpr_plotting as gprp
+from processing import gpr_plotting as gprp
 from processing.geodata_processing import *
 
 def plot_switzerland_glacier_overview(
@@ -280,6 +280,7 @@ def plot_switzerland_glacier_overview(
     canton_labels = {
         "VS": (2620000, 1125000),
         "GR": (2765000, 1165000),
+        "VD": (2569332, 1133979,)
     }
     for label, (cx, cy) in canton_labels.items():
         if extent[0] <= cx <= extent[1] and extent[2] <= cy <= extent[3]:
@@ -721,7 +722,8 @@ def build_tyntag_timeseries_one_row(
     annotation_positions=None,
     annotation_fontsize: int | None = None,
     xlabel_y: float = 0.012,
-    wspace: float = 0.12
+    wspace: float = 0.12,
+    exclude_sensors: dict | None = None  # NEW argument
 ):
     import matplotlib.pyplot as plt
     from matplotlib.gridspec import GridSpec
@@ -741,6 +743,28 @@ def build_tyntag_timeseries_one_row(
         dcur = depths_current[code]
         dinit = depths_initial.get(code, None)
         blabs = labels[code]
+
+        # For each glacier in the loop:
+        if exclude_sensors and code in exclude_sensors:
+            sensors_to_exclude = set(exclude_sensors[code])
+            blabs = [lab for lab in blabs if lab not in sensors_to_exclude]
+            # Remove depths for excluded borehole
+            if len(blabs) == 1 and isinstance(dcur, list) and len(dcur) == 4:
+                orig_labels = labels[code]
+                idx = orig_labels.index(blabs[0])  # 0 or 1
+                if idx == 0:
+                    dcur = dcur[:2]
+                    if dinit is not None and isinstance(dinit, list) and len(dinit) == 4:
+                        dinit = dinit[:2]
+                else:
+                    dcur = dcur[2:]
+                    if dinit is not None and isinstance(dinit, list) and len(dinit) == 4:
+                        dinit = dinit[2:]
+            # --- MANUAL ANNOTATION OVERRIDE FOR GT1TT ---
+            if code == "GT" and "GT2TT" in sensors_to_exclude and len(blabs) == 1 and blabs[0] == "GT1TT":
+                # Override current and initial depths for annotation
+                dcur = [1.4, 6.4]
+                dinit = [4.2, 9.2]
 
         # Resolve per-panel annotation positions
         if isinstance(annotation_positions, dict):
@@ -776,7 +800,7 @@ def build_tyntag_timeseries_one_row(
             ax.tick_params(labelleft=False)   # hide y tick labels
 
         # Lower left glacier code (colored, white box)
-        label_color = rect_colors.get(code, "k")
+        label_color = "k"
         ax.text(0.02, 0.02, code, transform=ax.transAxes,
                 ha="left", va="bottom",
                 fontsize=base_fontsize, weight="bold",
@@ -785,11 +809,11 @@ def build_tyntag_timeseries_one_row(
 
         # Upper left panel label (a/b/c, black, white box)
         panel_labels = panel_labels
-        ax.text(0.02, 0.98, panel_labels.get(code, ""), transform=ax.transAxes,
-                ha="left", va="top",
-                fontsize=base_fontsize, weight="bold",
-                color="black",
-                bbox=dict(boxstyle="round,pad=0.15", fc="white", ec="none", alpha=1.0))
+        ax.text(0.02, 0.98, f"({panel_labels.get(code, '')})", transform=ax.transAxes,
+            ha="left", va="top",
+            fontsize=base_fontsize, weight="bold",
+            color="black",
+            bbox=dict(boxstyle="round,pad=0.15", fc="white", ec="none", alpha=1.0))
 
     # Figure-level legend with consistent colors
     cmap = build_profile_color_map(list(legend_labels))
@@ -1058,7 +1082,9 @@ def draw_glacier_map(
     outlines: gpd.GeoDataFrame | str | None = None,   # NEW: GeoDataFrame or path to file (or DataFrame-like with 'geometry' column)
     outline_color: str | None = None,                # optional override color for outline
     outline_linewidth: float = 2.0,
-    outline_alpha: float = 0.85
+    outline_alpha: float = 0.85,
+    tick_labelsize : int = 8,
+    show_borehole_labels: bool = True  # <-- NEW ARGUMENT
 ):
     """
     Draw a single glacier map on `ax`.
@@ -1371,18 +1397,19 @@ def draw_glacier_map(
             ax.scatter(r.geometry.x, r.geometry.y,
                        s=40, marker='o', color=bh_color, edgecolors='black',
                        linewidths=1, alpha=0.95, zorder=9, label='Boreholes')
-            txt_va = 'top' if ((title == "Chessjen" and r.get('name') == "CJ1G") or (title == "Hohsaas" and r.get('name') == "HS3G")) else 'bottom'
-            ax.text(r.geometry.x, r.geometry.y, r.get('name', ''),
-                    fontsize=ANNO_FONTSIZE-2, color='k', ha='left', va=txt_va,
-                    bbox=dict(boxstyle='round,pad=0.15', fc='white', ec='none', alpha=0.65),
-                    zorder=10)
+            if show_borehole_labels:
+                txt_va = 'top' if ((title == "Chessjen" and r.get('name') == "CJ1G") or (title == "Hohsaas" and r.get('name') == "HS3G")) else 'bottom'
+                ax.text(r.geometry.x, r.geometry.y, r.get('name', ''),
+                        fontsize=ANNO_FONTSIZE-2, color='k', ha='left', va=txt_va,
+                        bbox=dict(boxstyle='round,pad=0.15', fc='white', ec='none', alpha=0.65),
+                        zorder=10)
 
     # Limits & formatting
     x0, y0, x1, y1 = bbox
     ax.set_xlim(x0, x1); ax.set_ylim(y0, y1)
     gprp.format_axes_coords(ax, x_step=200, y_step=200, thousands='apostrophe', unit='m', decimals=0)
     ax.xaxis.set_major_locator(MultipleLocator(200))
-    ax.tick_params(axis='both', which='both', direction='out', pad=1.0, labelsize=8)
+    ax.tick_params(axis='both', which='both', direction='out', pad=1.0, labelsize=tick_labelsize)
     for lbl in ax.get_yticklabels():
         lbl.set_rotation(90); lbl.set_verticalalignment('center')
 

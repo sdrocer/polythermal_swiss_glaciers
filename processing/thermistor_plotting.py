@@ -381,7 +381,6 @@ class ThermistorDataPlotter:
         show_xlabel=True,
         show_xticklabels=True,
         smooth_days: float | int | None = 0,
-        # annotation controls
         annotation_y=None,
         annotation_spacing: float = 0.08,
         annotation_arrow_hide_dy: float = 0.06,
@@ -389,10 +388,6 @@ class ThermistorDataPlotter:
         annotation_positions=None,
         annotation_fontsize: int | None = None
     ):
-        """
-        Plot two TinyTag (NTC) boreholes (each with white/black probes) on one axis.
-        Colors: cmcrameri 'batlowK' (left half). Labels ending with 1TT/2TT get indices 2/3.
-        """
         import numpy as np
         import pandas as pd
         import matplotlib.pyplot as plt
@@ -400,13 +395,13 @@ class ThermistorDataPlotter:
         from matplotlib import dates as mdates
 
         # Colors: deterministic via build_profile_color_map (batlowK left half)
-        if not (borehole_labels and len(borehole_labels) >= 2):
-            raise ValueError("borehole_labels must contain two labels like ['SR1TT','SR2TT'].")
-        cmap_dict = build_profile_color_map(borehole_labels[:2])
-        color_bh1 = cmap_dict[borehole_labels[0]]
-        color_bh2 = cmap_dict[borehole_labels[1]]
+        if not (borehole_labels and len(borehole_labels) >= 1):
+            raise ValueError("borehole_labels must contain at least one label like ['SR1TT'].")
 
-        # Prepare axis/figure
+        cmap_dict = build_profile_color_map(borehole_labels)
+        color_bh1 = cmap_dict[borehole_labels[0]]
+        color_bh2 = cmap_dict[borehole_labels[1]] if len(borehole_labels) > 1 else None
+
         created_fig = False
         if ax is None:
             fig = plt.figure(figsize=(9, 7), dpi=300)
@@ -415,11 +410,10 @@ class ThermistorDataPlotter:
         else:
             fig = ax.figure
 
-        if depths is None or len(depths) != 4:
-            raise ValueError("depths must be 4 values: [BH1 white, BH1 black, BH2 white, BH2 black]")
+        if depths is None or len(depths) not in (2, 4):
+            raise ValueError("depths must be 2 or 4 values: [BH1 white, BH1 black, (optional: BH2 white, BH2 black)]")
         depths = [float(d) for d in depths]
 
-        # Load up to two TinyTag files
         fps = getattr(self, "file_paths", [getattr(self, "file_path", None)])
         delim = getattr(self, "delimiter", ",")
         meas  = getattr(self, "measurement_depth", None)
@@ -429,11 +423,40 @@ class ThermistorDataPlotter:
         if fps and fps[0]:
             t1 = ThermistorData(fps[0], delim, meas)
             ntc_thermistor_data1 = t1.get_ntc_data()
-        if len(fps) > 1 and fps[1]:
+        if len(fps) > 1 and fps[1] and len(depths) == 4:
             t2 = ThermistorData(fps[1], delim, meas)
             ntc_thermistor_data2 = t2.get_ntc_data()
 
-        # Optional smoothing (6H resample + centered rolling mean)
+        def _plot_sensor_with_failure(ax, times, temps, color, lw, label=None, fail_idx=None):
+            temps = np.array(temps)
+            times = np.array(times)
+            if fail_idx is None:
+                fail_idx = len(temps)
+            # Plot solid up to missing data
+            if fail_idx > 1:
+                ax.plot(times[:fail_idx], temps[:fail_idx], linestyle='-', color=color, linewidth=lw, label=label)
+            # Plot dotted line for remaining valid data after fail_idx
+            if fail_idx < len(temps):
+                valid_mask = ~np.isnan(temps[fail_idx:])
+                if valid_mask.any():
+                    ax.plot(times[fail_idx:][valid_mask], temps[fail_idx:][valid_mask], linestyle=':', color=color, linewidth=lw)
+                else:
+                    # If all remaining are NaN, plot a horizontal dotted line at last valid value
+                    last_valid = temps[fail_idx-1] if fail_idx > 0 else np.nan
+                    if np.isfinite(last_valid):
+                        ax.plot(times[fail_idx:], [last_valid]*len(times[fail_idx:]), linestyle=':', color=color, linewidth=lw)
+
+        def _normalize_fail_idx(fail_idx, original_length, current_length):
+            if original_length == 0:
+                return 0
+            rel = fail_idx / original_length
+            return int(rel * current_length)
+
+        def _first_nan_idx(series):
+            arr = np.array(series)
+            nan_mask = np.isnan(arr)
+            return np.argmax(nan_mask) if nan_mask.any() else len(arr)
+
         def _smooth_df(df, days):
             if df is None or df.empty or not days:
                 return df
@@ -447,15 +470,32 @@ class ThermistorDataPlotter:
                     d[col] = d[col].rolling(win, min_periods=1, center=True).mean()
             return d.reset_index()
 
+        fail_idx_white_1 = _first_nan_idx(ntc_thermistor_data1['White Probe Temperature']) if not ntc_thermistor_data1.empty else None
+        fail_idx_white_1 = _normalize_fail_idx(fail_idx_white_1, len(ntc_thermistor_data1), len(ntc_thermistor_data1))
+        fail_idx_black_1 = _first_nan_idx(ntc_thermistor_data1['Black Probe Temperature']) if not ntc_thermistor_data1.empty else None
+        fail_idx_black_1 = _normalize_fail_idx(fail_idx_black_1, len(ntc_thermistor_data1), len(ntc_thermistor_data1))
+        fail_idx_white_2 = _first_nan_idx(ntc_thermistor_data2['White Probe Temperature']) if not ntc_thermistor_data2.empty else None
+        fail_idx_white_2 = _normalize_fail_idx(fail_idx_white_2, len(ntc_thermistor_data2), len(ntc_thermistor_data2))
+        fail_idx_black_2 = _first_nan_idx(ntc_thermistor_data2['Black Probe Temperature']) if not ntc_thermistor_data2.empty else None
+        fail_idx_black_2 = _normalize_fail_idx(fail_idx_black_2, len(ntc_thermistor_data2), len(ntc_thermistor_data2))
+
         if smooth_days and float(smooth_days) > 0:
             ntc_thermistor_data1 = _smooth_df(ntc_thermistor_data1, smooth_days)
             ntc_thermistor_data2 = _smooth_df(ntc_thermistor_data2, smooth_days)
 
-        # Standardize TIME dtype and sort
         for df_ in (ntc_thermistor_data1, ntc_thermistor_data2):
             if not df_.empty:
                 df_["TIME"] = pd.to_datetime(df_["TIME"])
                 df_.sort_values("TIME", inplace=True)
+
+        # Custom failure indices for Corvatsch (CV) glacier
+        if borehole_labels and "CV2TT" in borehole_labels:
+            fail_idx_black_2 = 18    # manually set the failure index for black probe
+            fail_idx_white_2 = 1250  # manually set the failure index for white probe
+
+        if borehole_labels and "GT2TT" in borehole_labels:
+            fail_idx_black_2 = 1300    # manually set the failure index for black probe
+            fail_idx_white_2 = 1250  # manually set the failure index for white probe
 
         # Determine deployment date if not provided (earliest timestamp)
         if deployment_date is not None:
@@ -483,10 +523,25 @@ class ThermistorDataPlotter:
             except Exception as e:
                 print(f"Warning: calibration offsets not applied ({e})")
 
+        def _check_for_nans(df, label):
+            for probe in ['White Probe Temperature', 'Black Probe Temperature']:
+                if probe in df:
+                    nan_count = np.isnan(df[probe]).sum()
+                    if nan_count > 0:
+                        print(f"NaN detected in {probe} for borehole '{label}': {nan_count} missing values.")
+
+        if not ntc_thermistor_data1.empty:
+            _check_for_nans(ntc_thermistor_data1, borehole_labels[0])
+        if not ntc_thermistor_data2.empty and len(borehole_labels) > 1:
+            _check_for_nans(ntc_thermistor_data2, borehole_labels[1])
+
         # Initial depths (for label text)
         i_w1 = i_b1 = i_w2 = i_b2 = None
-        if isinstance(initial_depths, (list, tuple)) and len(initial_depths) >= 4:
-            i_w1, i_b1, i_w2, i_b2 = initial_depths[:4]
+        if isinstance(initial_depths, (list, tuple)):
+            if len(initial_depths) == 4:
+                i_w1, i_b1, i_w2, i_b2 = initial_depths
+            elif len(initial_depths) == 2:
+                i_w1, i_b1 = initial_depths
 
         # Style
         lw = 3
@@ -551,20 +606,31 @@ class ThermistorDataPlotter:
 
         # Draw lines (all solid)
         if not ntc_thermistor_data1.empty:
-            a_w1 = _alpha_for_depth(depths[0], dmin, dmax)
-            a_b1 = _alpha_for_depth(depths[1], dmin, dmax)
-            ax.plot(ntc_thermistor_data1['TIME'], ntc_thermistor_data1['White Probe Temperature'],
-                    linestyle='-', color=color_bh1, linewidth=lw, alpha=a_w1)
-            ax.plot(ntc_thermistor_data1['TIME'], ntc_thermistor_data1['Black Probe Temperature'],
-                    linestyle='-', color=color_bh1, linewidth=lw, alpha=a_b1)
-
-        if not ntc_thermistor_data2.empty:
-            a_w2 = _alpha_for_depth(depths[2], dmin, dmax)
-            a_b2 = _alpha_for_depth(depths[3], dmin, dmax)
-            ax.plot(ntc_thermistor_data2['TIME'], ntc_thermistor_data2['White Probe Temperature'],
-                    linestyle='-', color=color_bh2, linewidth=lw, alpha=a_w2)
-            ax.plot(ntc_thermistor_data2['TIME'], ntc_thermistor_data2['Black Probe Temperature'],
-                    linestyle='-', color=color_bh2, linewidth=lw, alpha=a_b2)
+            _plot_sensor_with_failure(
+                ax,
+                ntc_thermistor_data1['TIME'],
+                ntc_thermistor_data1['White Probe Temperature'],
+                color_bh1, lw, fail_idx=fail_idx_white_1
+            )
+            _plot_sensor_with_failure(
+                ax,
+                ntc_thermistor_data1['TIME'],
+                ntc_thermistor_data1['Black Probe Temperature'],
+                color_bh1, lw, fail_idx=fail_idx_black_1
+            )
+        if not ntc_thermistor_data2.empty and len(depths) == 4:
+            _plot_sensor_with_failure(
+                ax,
+                ntc_thermistor_data2['TIME'],
+                ntc_thermistor_data2['White Probe Temperature'],
+                color_bh2, lw, fail_idx=fail_idx_white_2
+            )
+            _plot_sensor_with_failure(
+                ax,
+                ntc_thermistor_data2['TIME'],
+                ntc_thermistor_data2['Black Probe Temperature'],
+                color_bh2, lw, fail_idx=fail_idx_black_2
+            )
 
         def _label(depth_val, init_val):
             s = f"{float(depth_val):.1f} m"
@@ -591,11 +657,7 @@ class ThermistorDataPlotter:
             # Decide target x,y
             x_target = _parse_x(pos[0], x_end) if isinstance(pos, tuple) else x_end
             y_target = y_only if (y_only is not None and np.isfinite(y_only)) else (pos[1] if isinstance(pos, tuple) else y_end)
-
-            # Keep label inside y-lims
-            y_min, y_max = ax.get_ylim()
-            pad = 0.02 * (y_max - y_min)
-            y_target = max(min(float(y_target), y_max - pad), y_min + pad)
+            y_target = float(y_target)  # <-- no clamping
 
             # Value of line at x_target for arrow decision
             y_line = _y_at_time(df, series, x_target)
@@ -603,9 +665,14 @@ class ThermistorDataPlotter:
 
             # Optional connector
             if draw_arrow:
-                ax.annotate("", xy=(x_target, y_line), xytext=(x_target, y_target),
-                            textcoords="data", arrowprops=dict(arrowstyle='-', color=color, lw=0.9, alpha=0.9),
-                            annotation_clip=True)
+                ax.plot(
+                    [x_target, x_target],
+                    [y_line, y_target],
+                    linestyle='--',
+                    linewidth=2.0,
+                    color=color,
+                    alpha=1
+                )
 
             # Label text with x-offset in points
             trans = ax.transData + mtransforms.ScaledTranslation(dx_pts/72.0, 0, fig.dpi_scale_trans)
@@ -619,7 +686,7 @@ class ThermistorDataPlotter:
         if not ntc_thermistor_data1.empty:
             _annotate(ntc_thermistor_data1, 'White Probe Temperature', color_bh1, pos_list[0], annoYs[0], _label(depths[0], i_w1), annotation_dx_pts)
             _annotate(ntc_thermistor_data1, 'Black Probe Temperature', color_bh1, pos_list[1], annoYs[1], _label(depths[1], i_b1), annotation_dx_pts)
-        if not ntc_thermistor_data2.empty:
+        if not ntc_thermistor_data2.empty and len(depths) == 4:
             _annotate(ntc_thermistor_data2, 'White Probe Temperature', color_bh2, pos_list[2], annoYs[2], _label(depths[2], i_w2), annotation_dx_pts)
             _annotate(ntc_thermistor_data2, 'Black Probe Temperature', color_bh2, pos_list[3], annoYs[3], _label(depths[3], i_b2), annotation_dx_pts)
 
@@ -648,17 +715,20 @@ class ThermistorDataPlotter:
             pass
 
         # Optional in-axes legend
-        if show_legend and borehole_labels and len(borehole_labels) >= 2:
-            handles = [
-                Line2D([0], [0], color=color_bh1, lw=lw, linestyle='-'),
-                Line2D([0], [0], color=color_bh2, lw=lw, linestyle='-'),
-            ]
+        handles = []
+        legend_names = []
+        handles.append(Line2D([0], [0], color=color_bh1, lw=lw, linestyle='-'))
+        legend_names.append(borehole_labels[0])
+        if not ntc_thermistor_data2.empty and len(borehole_labels) > 1 and len(depths) == 4:
+            handles.append(Line2D([0], [0], color=color_bh2, lw=lw, linestyle='-'))
+            legend_names.append(borehole_labels[1])
+        if show_legend and handles:
             if legend_outside:
-                ax.legend(handles, borehole_labels[:2], frameon=True, fancybox=False, edgecolor='black', framealpha=1,
-                          facecolor='white', loc='center left', bbox_to_anchor=(1.01, 0.5), ncol=1)
+                ax.legend(handles, legend_names, frameon=True, fancybox=False, edgecolor='black', framealpha=1,
+                        facecolor='white', loc='center left', bbox_to_anchor=(1.01, 0.5), ncol=1)
             else:
-                ax.legend(handles, borehole_labels[:2], frameon=True, fancybox=False, edgecolor='black', framealpha=1,
-                          facecolor='white', loc=legend_loc, ncol=1)
+                ax.legend(handles, legend_names, frameon=True, fancybox=False, edgecolor='black', framealpha=1,
+                        facecolor='white', loc=legend_loc, ncol=1)
 
         # Save if requested and we created a standalone figure
         out_path = None
@@ -820,7 +890,7 @@ def plot_chain_temperature_heatmap(
     levels = np.arange(vmin, vmax + temp_step * 0.99, temp_step)
 
     if cmap is None:
-        base = cmc.vik
+        base = cmc.lapaz
         n_bins = len(levels) - 1
         if n_bins <= 2:
             colors = base(np.linspace(0.3, 0.85, n_bins))
