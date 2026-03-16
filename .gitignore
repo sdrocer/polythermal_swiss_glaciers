@@ -12,3 +12,7 @@ calibration/photos/
 new_data/calibration/corrected_chain_offsets.csv
 data/sgi_2022/
 new_data/
+*.csv
+*.pdf
+*.svg
+*.png

@@ -112,7 +112,7 @@ class ThermistorData:
 
         return df
 
-    def get_chain_data_with_offsets(self, start_time=None, end_time=None, offsets=None, snapshot_day=None, return_daily_average=False):
+    def get_chain_data_with_offsets(self, start_time=None, end_time=None, offsets=None, snapshot_day=None, return_daily_average=False, aggregate=None):
         """
         Returns chain data for the given time range or a single snapshot day with offsets applied.
         Uses apply_chain_offsets from thermistor_calibration.py.
@@ -121,9 +121,12 @@ class ThermistorData:
         Parameters:
         -----------
         start_time : str, optional
-            Start time for data filtering
+            Start time for data filtering. Accepts formats:
+            - 'DD.MM.YYYY HH:MM:SS'
+            - 'YYYY-MM-DD'
+            - 'YYYYMMDD'
         end_time : str, optional  
-            End time for data filtering
+            End time for data filtering. Accepts same formats as start_time.
         offsets : dict or pd.Series, optional
             Offsets to apply to temperature readings
         snapshot_day : str, optional
@@ -131,13 +134,57 @@ class ThermistorData:
         return_daily_average : bool, default False
             If True and snapshot_day is provided, returns daily averages for each thermistor.
             If False, returns all data points for the snapshot day.
+        aggregate : str or None, default None
+            Aggregation method when both start_time and end_time are provided.
+            Options:
+            - None: return full timeseries (default for heatmaps)
+            - "mean": return single row with mean values per thermistor
+            - "median": return single row with median values per thermistor
         
         Returns:
         --------
-        pd.DataFrame with chain data. If return_daily_average=True and snapshot_day is provided,
-        returns single row with daily averages for each thermistor.
+        pd.DataFrame with chain data. 
+        - If aggregate is None: returns full timeseries
+        - If aggregate is "mean" or "median": returns single row with aggregated values
+        - If snapshot_day + return_daily_average: returns single row with daily average
         """
-        df = self.get_chain_data(start_time=start_time, end_time=end_time, snapshot_day=snapshot_day)
+        # Helper function to parse dates flexibly
+        def _parse_time(time_str):
+            if time_str is None:
+                return None
+            time_str = str(time_str).strip()
+            
+            # Try different formats
+            for fmt in ['%d.%m.%Y %H:%M:%S', '%Y-%m-%d', '%Y%m%d', '%d.%m.%Y']:
+                try:
+                    parsed = pd.to_datetime(time_str, format=fmt, errors='coerce')
+                    if pd.notna(parsed):
+                        return parsed
+                except:
+                    continue
+            
+            # Fallback to pandas flexible parsing
+            parsed = pd.to_datetime(time_str, errors='coerce')
+            return parsed if pd.notna(parsed) else None
+        
+        # Parse start and end times if provided
+        parsed_start = _parse_time(start_time) if start_time is not None else None
+        parsed_end = _parse_time(end_time) if end_time is not None else None
+        
+        # Convert back to the format expected by get_chain_data
+        if parsed_start is not None:
+            start_time_str = parsed_start.strftime('%d.%m.%Y %H:%M:%S')
+        else:
+            start_time_str = None
+            
+        if parsed_end is not None:
+            end_time_str = parsed_end.strftime('%d.%m.%Y %H:%M:%S')
+        else:
+            end_time_str = None
+        
+        # Get data using the converted format
+        df = self.get_chain_data(start_time=start_time_str, end_time=end_time_str, snapshot_day=snapshot_day)
+        
         if offsets is not None and not df.empty:
             df = apply_chain_offsets(df, offsets)
         
@@ -176,7 +223,40 @@ class ThermistorData:
                 avg_data[col] = [df[col].mean()]
             
             return pd.DataFrame(avg_data)
-    
+        
+        # NEW: If aggregate is None, return full timeseries (for heatmaps)
+        if aggregate is None:
+            return df
+        
+        # If both start_time and end_time are provided WITH aggregate option, aggregate over entire period
+        if start_time is not None and end_time is not None and snapshot_day is None and not df.empty:
+            aggregate = str(aggregate).lower()
+            if aggregate not in ["mean", "median"]:
+                raise ValueError(f"aggregate must be None, 'mean', or 'median', got '{aggregate}'")
+            
+            # Identify numeric columns to aggregate
+            exclude_cols = ['NO', 'TIME']
+            numeric_cols = [col for col in df.columns if col not in exclude_cols and pd.api.types.is_numeric_dtype(df[col])]
+            
+            agg_data = {}
+            agg_data['NO'] = [1]  # Single measurement number
+            
+            # Set TIME to midpoint of the period
+            if parsed_start and parsed_end:
+                midpoint = parsed_start + (parsed_end - parsed_start) / 2
+                agg_data['TIME'] = [midpoint]
+            else:
+                agg_data['TIME'] = [df['TIME'].iloc[len(df)//2]]
+            
+            # Aggregate each thermistor column
+            for col in numeric_cols:
+                if aggregate == "mean":
+                    agg_data[col] = [df[col].mean()]
+                elif aggregate == "median":
+                    agg_data[col] = [df[col].median()]
+            
+            return pd.DataFrame(agg_data)
+        
         return df
 
     def get_ntc_data(self):
@@ -224,10 +304,68 @@ class ThermistorData:
 
             return df
 
-    def get_ntc_data_with_offsets(self, logger_id, offsets_df, snapshot_day=None, aggregate=None):
+    def get_ntc_data_with_offsets(self, logger_id, offsets_df, snapshot_day=None, aggregate=None, start_time=None, end_time=None):
         """
-        Get NTC data with offset correction and optional aggregation.
+        Get NTC data with offset correction and optional aggregation or time filtering.
         Auto-detects both legacy and new CSV formats (delegates to get_ntc_data()).
+        
+        Parameters
+        ----------
+        logger_id : int or str
+            Logger ID to match in offsets_df
+        offsets_df : pd.DataFrame
+            DataFrame containing 'Logger', 'Black Probe Offset', 'White Probe Offset' columns
+        snapshot_day : str, optional
+            If provided with aggregate, filters data to this day. Formats: '20250819', '2025-08-19', '19.08.2025'
+        aggregate : str, optional
+            Aggregation method: 
+            - 'daily'/'day': daily mean for snapshot_day
+            - 'monthly'/'month': monthly mean for snapshot_day's month
+            - 'annual'/'year': annual mean for snapshot_day's year
+            - 'all'/'overall': mean over entire period (or filtered period if start_time/end_time provided)
+            - None: return full time series (optionally filtered by start_time/end_time)
+        start_time : str, optional
+            Start time for filtering (used when aggregate=None or aggregate='all')
+            Formats: '20250819', '2025-08-19', '19.08.2025'
+        end_time : str, optional
+            End time for filtering (used when aggregate=None or aggregate='all')
+            Same formats as start_time
+        
+        Returns
+        -------
+        pd.DataFrame
+            If aggregate is provided: single row with averaged temperatures
+            If aggregate=None: full time series (optionally filtered by start_time/end_time)
+            
+            Columns: Measurement, TIME, Black Probe Temperature, White Probe Temperature
+        
+        Examples
+        --------
+        # Get full time series with offsets applied
+        df_full = thermistor.get_ntc_data_with_offsets('A55201', offsets_df, aggregate=None)
+        
+        # Get time series filtered to specific period
+        df_period = thermistor.get_ntc_data_with_offsets(
+            'A55201', offsets_df, 
+            start_time='01.08.2024', 
+            end_time='31.08.2024',
+            aggregate=None
+        )
+        
+        # Get daily average for specific day
+        df_day = thermistor.get_ntc_data_with_offsets(
+            'A55201', offsets_df, 
+            snapshot_day='19.08.2025', 
+            aggregate='daily'
+        )
+        
+        # Get overall mean for filtered period
+        df_mean = thermistor.get_ntc_data_with_offsets(
+            'A55201', offsets_df,
+            start_time='01.08.2024',
+            end_time='31.08.2024',
+            aggregate='all'
+        )
         """
         import pandas as pd
         import numpy as np
@@ -251,29 +389,85 @@ class ThermistorData:
         df['Black Probe Temperature'] = df['Black Probe Temperature'] - black_offset
         df['White Probe Temperature'] = df['White Probe Temperature'] - white_offset
 
-        # Helper to parse a day
-        def _parse_day(val):
+        # Helper to parse a day/time
+        def _parse_time(val):
             if val is None:
                 return None
-            for fmt in ('%d.%m.%Y', '%Y-%m-%d', '%Y%m%d'):
-                d = pd.to_datetime(val, format=fmt, errors='coerce')
-                if not pd.isna(d):
-                    return d.normalize()
-            d = pd.to_datetime(val, errors='coerce')
-            return None if pd.isna(d) else d.normalize()
+            for fmt in ('%d.%m.%Y', '%Y-%m-%d', '%Y%m%d', '%d.%m.%Y %H:%M:%S'):
+                dt = pd.to_datetime(val, format=fmt, errors='coerce')
+                if not pd.isna(dt):
+                    return dt
+            dt = pd.to_datetime(val, errors='coerce')
+            return None if pd.isna(dt) else dt
 
-        # No aggregation requested
+        # Apply time filtering if start_time or end_time provided
+        if start_time is not None or end_time is not None:
+            df = df.copy()
+            df['TIME'] = pd.to_datetime(df['TIME'], errors='coerce')
+            
+            if start_time is not None:
+                t_start = _parse_time(start_time)
+                if t_start is not None:
+                    df = df[df['TIME'] >= t_start]
+            
+            if end_time is not None:
+                t_end = _parse_time(end_time)
+                if t_end is not None:
+                    df = df[df['TIME'] < t_end]
+            
+            if df.empty:
+                print(f"Warning: No data in time range {start_time} to {end_time}")
+                return pd.DataFrame(columns=['Measurement', 'TIME', 'Black Probe Temperature', 'White Probe Temperature'])
+
+        # No aggregation requested - return full time series
         if aggregate is None:
-            if snapshot_day is None:
-                return df
-            day = _parse_day(snapshot_day)
+            # Re-number measurements if needed
+            if 'Measurement' in df.columns:
+                df = df.reset_index(drop=True)
+                df['Measurement'] = range(1, len(df) + 1)
+            return df
+
+        # --- Aggregation logic ---
+        agg = str(aggregate).lower()
+        
+        if agg in {'all', 'overall'}:
+            # Average over entire (filtered) period
+            subset = df
+            if subset.empty:
+                raise ValueError("No data available for aggregation")
+            label_time = (df['TIME'].min() + (df['TIME'].max() - df['TIME'].min()) / 2) if not df.empty else pd.NaT
+        else:
+            # Need snapshot_day for time-specific aggregations
+            day = _parse_time(snapshot_day)
             if day is None:
-                raise ValueError(f"Could not parse snapshot_day: {snapshot_day}")
-            start, end = day, day + pd.Timedelta(days=1)
-            day_df = df[(df['TIME'] >= start) & (df['TIME'] < end)]
-            if day_df.empty:
-                raise ValueError(f"No data found for day {snapshot_day}")
-            return day_df
+                raise ValueError(f"snapshot_day is required for aggregate='{aggregate}' and could not be parsed.")
+            
+            if agg in {'daily', 'day'}:
+                start, end = day.normalize(), day.normalize() + pd.Timedelta(days=1)
+                subset = df[(df['TIME'] >= start) & (df['TIME'] < end)]
+                label_time = start + pd.Timedelta(hours=12)
+            elif agg in {'monthly', 'month'}:
+                subset = df[(df['TIME'].dt.year == day.year) & (df['TIME'].dt.month == day.month)]
+                label_time = pd.Timestamp(day.year, day.month, 15)
+            elif agg in {'annual', 'year'}:
+                subset = df[df['TIME'].dt.year == day.year]
+                label_time = pd.Timestamp(day.year, 7, 1)
+            else:
+                raise ValueError("aggregate must be one of: None, daily, monthly, annual, all")
+            
+            if subset.empty:
+                raise ValueError(f"No data found for selection (aggregate='{aggregate}', snapshot_day={snapshot_day}).")
+
+        # Compute averages
+        avg_black = subset['Black Probe Temperature'].mean()
+        avg_white = subset['White Probe Temperature'].mean()
+
+        return pd.DataFrame({
+            'Measurement': [1],
+            'TIME': [label_time],
+            'Black Probe Temperature': [avg_black],
+            'White Probe Temperature': [avg_white]
+        })
 
         # Aggregation
         agg = str(aggregate).lower()
@@ -753,6 +947,33 @@ def interpolate_temperature_kriging(
 
     return grid_temp, grid_x, grid_y
 
+def compute_distance_uncertainty(
+    grid_xx, grid_weighted_depth, points_2d,
+    max_distance=100.0,  # meters - beyond this, uncertainty = 1.0
+    min_distance=5.0     # meters - within this, uncertainty = 0.0
+):
+    """
+    Compute uncertainty grid based on distance to nearest measurement.
+    Returns array [0, 1] where 1 = high uncertainty (far from data).
+    """
+    from scipy.spatial import cKDTree
+    
+    # Build KD-tree for fast nearest-neighbor search
+    tree = cKDTree(points_2d)
+    
+    # Query distance to nearest measurement point for each grid cell
+    grid_points = np.column_stack([grid_xx.ravel(), grid_weighted_depth.ravel()])
+    distances, _ = tree.query(grid_points)
+    distances = distances.reshape(grid_xx.shape)
+    
+    # Normalize to [0, 1]: 0 = at measurement, 1 = far away
+    uncertainty = np.clip(
+        (distances - min_distance) / (max_distance - min_distance),
+        0.0, 1.0
+    )
+    
+    return uncertainty
+
 def interpolate_glacier_temperature_field_2d(
     profile_df,
     borehole_coords_df, 
@@ -760,8 +981,9 @@ def interpolate_glacier_temperature_field_2d(
     depth_dict,
     n_depth=200,
     n_elev=300,
-    depth_weight=2.5,  # Weight depth more heavily than horizontal distance
-    rbf_function='multiquadric'  # RBF function type
+    depth_weight=1.5,  # Weight depth more heavily than horizontal distance
+    rbf_function='multiquadric',  # RBF function type
+    rbf_smooth=0.05  # Smoothing parameter for RBF
 ):
     """
     Interpolates glacier temperature field using 2D RBF interpolation
@@ -825,7 +1047,7 @@ def interpolate_glacier_temperature_field_2d(
     rbf = Rbf(
         points_2d[:, 0], points_2d[:, 1], temps_2d, 
         function=rbf_function,  # 'linear', 'cubic', 'quintic', 'thin_plate', 'multiquadric', 'inverse'
-        smooth=0.1  # Add some smoothing to avoid overfitting
+        smooth=rbf_smooth  # Add some smoothing to avoid overfitting
     )
     
     # Interpolate on the grid (with weighted elevation)
@@ -1056,7 +1278,8 @@ def derive_cts_line(temp_grid, x_coords, z_grid, surface_elev, bed_elev,
 # simple implementation (SI units)
 rho_ice = 917.0        # kg m^-3
 g = 9.81               # m s^-2
-gamma = 0.0742         # K per MPa  (use 0.098 for air-saturated water if appropriate)
+# gamma = 0.0742       # K per MPa, pure ice/pure water (Cuffey & Paterson 2010, Eq. 9.9)
+gamma = 0.098          # K per MPa, air-saturated ice (Cuffey & Paterson 2010, Eq. 9.10)
 
 def pressure_from_overburden(h, rho=rho_ice, g=g):
     # h: ice thickness above point [m]
@@ -1383,25 +1606,657 @@ def compute_tynitag_zaa_batch(
             })
     return out
 
-def summarize_zaa_by_glacier(metrics):
+def compute_tynitag_phase_shift(
+    df,
+    depth_white,
+    depth_black,
+    *,
+    resample="1D",
+    smooth_window="7D",
+    reference_probe="white",
+    min_prominence_fraction=0.08,  # LOWERED from 0.15
+    min_distance_days=60,          # LOWERED from 90
+    debug_plot=False,
+    extrapolate_missing_extrema=True
+):
     """
-    metrics: list of dicts from compute_tynitag_zaa_batch
-    Returns DataFrame with glacier, zaa_mean, zaa_min, zaa_max, zaa_range, n
+    Compute phase shift (time lag) between two NTC probes in one borehole.
+    
+    Tracks how temperature minima shift from winter→summer with increasing depth.
+    Includes extrapolation for missing deeper probe troughs when record ends too early.
+    
+    Parameters
+    ----------
+    df : pd.DataFrame
+        Must have columns: TIME, Black Probe Temperature, White Probe Temperature
+    depth_white : float
+        Depth of white probe (m)
+    depth_black : float
+        Depth of black probe (m)
+    resample : str, default "1D"
+        Resampling frequency
+    smooth_window : str, default "7D"
+        Rolling window for smoothing
+    reference_probe : str, default "white"
+        Reference probe ("white" or "black")
+    min_prominence_fraction : float, default 0.08
+        Minimum prominence as fraction of temperature range (lowered for damped signals)
+    min_distance_days : int, default 60
+        Minimum distance between peaks/troughs in days
+    debug_plot : bool, default False
+        Show diagnostic plot with detected extrema
+    extrapolate_missing_extrema : bool, default True
+        Extrapolate missing troughs when record ends before minimum reached
+    
+    Returns
+    -------
+    dict with phase shift metrics, correlation, matched extrema counts, etc.
     """
-    if isinstance(metrics, list):
-        df = pd.DataFrame(metrics)
+    import numpy as np
+    from scipy.signal import correlate, find_peaks, savgol_filter
+    import pandas as pd
+    
+    def _empty_result():
+        return {
+            "phase_shift_days": np.nan,
+            "phase_shift_hours": np.nan,
+            "phase_shift_per_meter_days": np.nan,
+            "phase_shift_per_meter_hours": np.nan,
+            "correlation": np.nan,
+            "n_peaks_matched": 0,
+            "n_troughs_matched": 0,
+            "white_amplitude": np.nan,
+            "black_amplitude": np.nan,
+            "depth_white": float(depth_white),
+            "depth_black": float(depth_black),
+            "depth_difference": float(depth_black - depth_white),
+            "white_peaks_times": [],
+            "black_peaks_times": [],
+            "white_troughs_times": [],
+            "black_troughs_times": [],
+            "method": "none",
+            "extrapolated": False
+        }
+    
+    # Validation
+    if df is None or df.empty:
+        return _empty_result()
+    
+    required_cols = ["White Probe Temperature", "Black Probe Temperature"]
+    if not all(col in df.columns for col in required_cols):
+        raise ValueError(f"DataFrame must contain {required_cols}")
+    
+    # Prepare data
+    df_work = df[["TIME"] + required_cols].copy()
+    df_work["TIME"] = pd.to_datetime(df_work["TIME"], errors="coerce")
+    df_work = df_work.dropna(subset=["TIME"]).set_index("TIME").sort_index()
+    
+    if df_work.empty:
+        return _empty_result()
+    
+    # Resample and smooth
+    df_res = df_work.resample(resample).mean()
+    if smooth_window:
+        df_res = df_res.rolling(smooth_window, min_periods=1, center=True).mean()
+    
+    # Extract aligned series
+    white_series = df_res["White Probe Temperature"].dropna()
+    black_series = df_res["Black Probe Temperature"].dropna()
+    
+    if white_series.empty or black_series.empty or len(white_series) < 60:
+        return _empty_result()
+    
+    common_idx = white_series.index.intersection(black_series.index)
+    if len(common_idx) < 60:
+        return _empty_result()
+    
+    white_aligned = white_series.loc[common_idx].values
+    black_aligned = black_series.loc[common_idx].values
+    times = common_idx
+    
+    # Calculate signal characteristics
+    white_range = white_aligned.max() - white_aligned.min()
+    black_range = black_aligned.max() - black_aligned.min()
+    white_amp = 0.5 * white_range
+    black_amp = 0.5 * black_range
+    
+    print(f"  White: range={white_range:.3f}°C, amplitude={white_amp:.3f}°C")
+    print(f"  Black: range={black_range:.3f}°C, amplitude={black_amp:.3f}°C (damping={1-black_range/white_range:.2%})")
+    
+    # Detrend before smoothing (helps with seasonal signal detection)
+    white_detrend = white_aligned - np.polyval(np.polyfit(np.arange(len(white_aligned)), white_aligned, 1), np.arange(len(white_aligned)))
+    black_detrend = black_aligned - np.polyval(np.polyfit(np.arange(len(black_aligned)), black_aligned, 1), np.arange(len(black_aligned)))
+    
+    # Apply Savitzky-Golay filter to detrended data
+    try:
+        window_length = min(51, len(white_detrend) if len(white_detrend) % 2 == 1 else len(white_detrend) - 1)
+        if window_length < 5:
+            window_length = 5
+        white_smooth = savgol_filter(white_detrend, window_length, 3)
+        black_smooth = savgol_filter(black_detrend, window_length, 3)
+    except:
+        white_smooth = white_detrend
+        black_smooth = black_detrend
+    
+    # ADAPTIVE prominence: lower for damped signal (black probe)
+    # Use absolute minimum of 0.05°C or fraction of range
+    white_prominence = max(0.05, min_prominence_fraction * white_range)
+    black_prominence = max(0.03, min_prominence_fraction * black_range * 0.7)  # Extra relaxation for black
+    
+    print(f"  Prominences: white={white_prominence:.3f}°C, black={black_prominence:.3f}°C")
+    
+    # Convert min_distance to samples
+    if len(times) > 1:
+        dt_days = (times[1] - times[0]).total_seconds() / 86400.0
+        distance_samples = max(1, int(min_distance_days / dt_days))
     else:
-        df = metrics.copy()
+        distance_samples = 1
+    
+    print(f"  Min extrema separation: {min_distance_days} days ({distance_samples} samples)")
+    
+    # Find peaks (summer maxima)
+    white_peak_idx, white_peak_props = find_peaks(
+        white_smooth,
+        prominence=white_prominence,
+        distance=distance_samples,
+        width=2  # Relaxed width requirement
+    )
+    black_peak_idx, black_peak_props = find_peaks(
+        black_smooth,
+        prominence=black_prominence,
+        distance=distance_samples,
+        width=2
+    )
+    
+    # Find troughs (winter minima) - KEY METRIC
+    white_trough_idx, white_trough_props = find_peaks(
+        -white_smooth,
+        prominence=white_prominence,
+        distance=distance_samples,
+        width=2
+    )
+    black_trough_idx, black_trough_props = find_peaks(
+        -black_smooth,
+        prominence=black_prominence,
+        distance=distance_samples,
+        width=2
+    )
+    
+    # Convert to timestamps
+    white_peaks = times[white_peak_idx]
+    black_peaks = times[black_peak_idx]
+    white_troughs = times[white_trough_idx]
+    black_troughs = times[black_trough_idx]
+    
+    print(f"  Detected: {len(white_peaks)} white peaks, {len(black_peaks)} black peaks")
+    print(f"           {len(white_troughs)} white troughs, {len(black_troughs)} black troughs")
+    
+    # NEW: Extrapolation logic for missing black trough
+    extrapolated_black_trough = None
+    is_extrapolated = False
+    
+    if extrapolate_missing_extrema and len(white_troughs) > 0 and len(black_troughs) == 0:
+        # Check conditions for extrapolation:
+        # 1. Black probe is cooling at record end
+        # 2. Temperature hasn't reached expected minimum yet
+        
+        last_60_days = black_smooth[-60:] if len(black_smooth) >= 60 else black_smooth
+        if len(last_60_days) >= 10:
+            # Linear trend in last 60 days
+            trend_slope = np.polyfit(np.arange(len(last_60_days)), last_60_days, 1)[0]
+            cooling_trend = trend_slope < -0.001  # Cooling at least 0.001°C/day
+            
+            # Check if still above minimum
+            black_min = black_smooth.min()
+            current_temp = black_smooth[-1]
+            still_above_min = current_temp > (black_min + 0.05)
+            
+            if cooling_trend and still_above_min:
+                print(f"  ⚠ Black probe cooling at record end: T={current_temp:.3f}°C, min={black_min:.3f}°C, trend={trend_slope:.5f}°C/day")
+                
+                # Estimate expected lag from cross-correlation
+                corr_full = correlate(black_detrend, white_detrend, mode='full')
+                lags_full = np.arange(-len(white_detrend) + 1, len(white_detrend))
+                dt = (times[1] - times[0]).total_seconds() / 86400.0 if len(times) > 1 else 1.0
+                lags_days = lags_full * dt
+                
+                # Search only positive lags (black delayed)
+                pos_mask = (lags_days >= 0) & (lags_days <= 200)
+                corr_pos = corr_full[pos_mask]
+                lags_pos = lags_days[pos_mask]
+                
+                if len(corr_pos) > 0:
+                    max_idx = np.argmax(corr_pos)
+                    expected_lag = lags_pos[max_idx]
+                    
+                    # Extrapolate: white_trough + expected_lag
+                    white_trough_time = white_troughs[-1]
+                    expected_black_trough = white_trough_time + pd.Timedelta(days=expected_lag)
+                    
+                    record_end = times[-1]
+                    days_after = (expected_black_trough - record_end).days
+                    
+                    # Only extrapolate if reasonable (within 6 months)
+                    if 0 < days_after <= 180:
+                        extrapolated_black_trough = expected_black_trough
+                        is_extrapolated = True
+                        black_troughs = pd.DatetimeIndex(list(black_troughs) + [extrapolated_black_trough])
+                        
+                        print(f"  ✓ Extrapolated black trough to {expected_black_trough.strftime('%Y-%m-%d')}")
+                        print(f"    ({days_after} days after record, based on {expected_lag:.1f}-day lag)")
+                    else:
+                        print(f"  ✗ Extrapolation rejected: {days_after} days after record (unrealistic)")
+    
+    # Print detected dates
+    if len(white_peaks) > 0:
+        print(f"  White peaks: {', '.join(t.strftime('%Y-%m-%d') for t in white_peaks)}")
+    if len(black_peaks) > 0:
+        print(f"  Black peaks: {', '.join(t.strftime('%Y-%m-%d') for t in black_peaks)}")
+    if len(white_troughs) > 0:
+        print(f"  White troughs: {', '.join(t.strftime('%Y-%m-%d') for t in white_troughs)}")
+    if len(black_troughs) > 0:
+        dates_str = ', '.join(
+            t.strftime('%Y-%m-%d') + (' ⭐' if is_extrapolated and i == len(black_troughs)-1 else '')
+            for i, t in enumerate(black_troughs)
+        )
+        print(f"  Black troughs: {dates_str}")
+    
+    # DEBUG PLOT
+    if debug_plot:
+        import matplotlib.pyplot as plt
+        fig, axes = plt.subplots(3, 1, figsize=(15, 10), sharex=True)
+        
+        # Panel 1: White probe
+        ax1 = axes[0]
+        ax1.plot(times, white_aligned, 'o-', alpha=0.2, label='Raw', markersize=1, color='gray')
+        ax1.plot(times, white_detrend + white_aligned.mean(), '-', linewidth=1.5, label='Detrended', color='steelblue', alpha=0.7)
+        ax1.plot(times, white_smooth + white_aligned.mean(), '-', linewidth=2, label='Smoothed', color='navy')
+        if len(white_peaks) > 0:
+            ax1.plot(white_peaks, white_smooth[white_peak_idx] + white_aligned.mean(), 
+                    'r^', markersize=14, label='Peaks', zorder=5)
+        if len(white_troughs) > 0:
+            ax1.plot(white_troughs, white_smooth[white_trough_idx] + white_aligned.mean(), 
+                    'bv', markersize=14, label='Troughs', zorder=5)
+        ax1.set_ylabel('White (shallow)\nTemperature (°C)', fontsize=11, fontweight='bold')
+        ax1.legend(loc='upper right', fontsize=9, ncol=5)
+        ax1.grid(True, alpha=0.3)
+        ax1.set_title(f'Phase Shift Analysis: {reference_probe.upper()} as Reference | Δz = {depth_black-depth_white:.2f}m', 
+                     fontsize=13, fontweight='bold')
+        
+        # Panel 2: Black probe
+        ax2 = axes[1]
+        ax2.plot(times, black_aligned, 'o-', alpha=0.2, label='Raw', markersize=1, color='gray')
+        ax2.plot(times, black_detrend + black_aligned.mean(), '-', linewidth=1.5, label='Detrended', color='darkorange', alpha=0.7)
+        ax2.plot(times, black_smooth + black_aligned.mean(), '-', linewidth=2, label='Smoothed', color='darkred')
+        if len(black_peaks) > 0:
+            ax2.plot(black_peaks, black_smooth[black_peak_idx] + black_aligned.mean(), 
+                    'r^', markersize=14, label='Peaks', zorder=5)
+        if len(black_trough_idx) > 0 and not is_extrapolated:
+            ax2.plot(black_troughs, black_smooth[black_trough_idx] + black_aligned.mean(), 
+                    'bv', markersize=14, label='Troughs', zorder=5)
+        elif is_extrapolated:
+            if len(black_trough_idx) > 0:
+                ax2.plot(black_troughs[:-1], black_smooth[black_trough_idx] + black_aligned.mean(), 
+                        'bv', markersize=14, label='Troughs', zorder=5)
+            # Extrapolated trough
+            ax2.axvline(extrapolated_black_trough, color='purple', linestyle='--', 
+                       linewidth=2.5, alpha=0.8, label='Extrapolated', zorder=4)
+            y_est = black_smooth.min() + black_aligned.mean()
+            ax2.plot(extrapolated_black_trough, y_est, 'mD', 
+                    markersize=16, label='Expected trough', zorder=5, markeredgecolor='white', markeredgewidth=1.5)
+        ax2.set_ylabel('Black (deep)\nTemperature (°C)', fontsize=11, fontweight='bold')
+        ax2.legend(loc='upper right', fontsize=9, ncol=5)
+        ax2.grid(True, alpha=0.3)
+        
+        # Panel 3: Overlay comparison
+        ax3 = axes[2]
+        # Normalize both to [0,1] for comparison
+        w_norm = (white_smooth - white_smooth.min()) / (white_smooth.max() - white_smooth.min())
+        b_norm = (black_smooth - black_smooth.min()) / (black_smooth.max() - black_smooth.min())
+        ax3.plot(times, w_norm, '-', linewidth=2, label=f'White (shallow, {depth_white:.1f}m)', color='navy')
+        ax3.plot(times, b_norm, '-', linewidth=2, label=f'Black (deep, {depth_black:.1f}m)', color='darkred')
+        ax3.set_ylabel('Normalized\nTemperature', fontsize=11, fontweight='bold')
+        ax3.set_xlabel('Time', fontsize=11, fontweight='bold')
+        ax3.legend(loc='upper right', fontsize=10)
+        ax3.grid(True, alpha=0.3)
+        ax3.set_ylim([-0.1, 1.1])
+        
+        plt.tight_layout()
+        plt.show()
+    
+    # Match extrema between probes
+    def match_extrema(ref_times, target_times, max_lag_days=200):
+        """Find closest match within max_lag_days"""
+        if len(ref_times) == 0 or len(target_times) == 0:
+            return np.array([])
+        
+        lags = []
+        for ref_t in ref_times:
+            time_diffs = (target_times - ref_t).total_seconds() / 86400.0
+            valid = np.abs(time_diffs) <= max_lag_days
+            if valid.any():
+                closest_idx = np.argmin(np.abs(time_diffs[valid]))
+                lag = time_diffs[valid][closest_idx]
+                lags.append(lag)
+                
+                target_t = target_times[np.where(valid)[0][closest_idx]]
+                marker = " ⭐" if is_extrapolated and target_t == extrapolated_black_trough else ""
+                print(f"    {ref_t.strftime('%Y-%m-%d')} → {target_t.strftime('%Y-%m-%d')} = {lag:+.1f} days{marker}")
+        
+        return np.array(lags)
+    
+    # Perform matching
+    if reference_probe.lower() in ["white", "white probe"]:
+        print("  Matching white → black (positive = delayed)")
+        peak_lags = match_extrema(white_peaks, black_peaks)
+        trough_lags = match_extrema(white_troughs, black_troughs)
+    else:
+        print("  Matching black → white")
+        peak_lags = -match_extrema(black_peaks, white_peaks)
+        trough_lags = -match_extrema(black_troughs, white_troughs)
+    
+    all_lags = np.concatenate([peak_lags, trough_lags])
+    n_peaks = len(peak_lags)
+    n_troughs = len(trough_lags)
+    
+    # Cross-correlation as validation
+    corr_full = correlate(black_detrend, white_detrend, mode='full')
+    lags_xcorr = np.arange(-len(white_detrend) + 1, len(white_detrend))
+    dt = (times[1] - times[0]).total_seconds() / 86400.0 if len(times) > 1 else 1.0
+    lags_days_xcorr = lags_xcorr * dt
+    
+    search_mask = np.abs(lags_days_xcorr) <= 200
+    corr_search = corr_full[search_mask]
+    lags_search = lags_days_xcorr[search_mask]
+    
+    max_corr_idx = np.argmax(corr_search)
+    xcorr_lag = lags_search[max_corr_idx]
+    
+    # Normalize correlation coefficient
+    std_w = white_detrend.std()
+    std_b = black_detrend.std()
+    max_corr = corr_search[max_corr_idx] / (len(white_detrend) * std_w * std_b) if (std_w * std_b) > 0 else 0.0
+    
+    # Decide final phase shift method
+    if len(all_lags) >= 2:
+        # Multiple matches - use median (robust)
+        phase_shift_days = float(np.median(all_lags))
+        method = "extrema_median" + ("_extrapolated" if is_extrapolated else "")
+        print(f"  ✓ Phase shift: {phase_shift_days:.2f} days ({len(all_lags)} matches, median)")
+        print(f"    Cross-correlation: {xcorr_lag:.2f} days (ρ={max_corr:.3f})")
+    elif len(all_lags) == 1:
+        # Single match
+        phase_shift_days = float(all_lags[0])
+        method = "extrema_single" + ("_extrapolated" if is_extrapolated else "")
+        print(f"  ⚠ Phase shift: {phase_shift_days:.2f} days (1 match only)")
+        print(f"    Cross-correlation: {xcorr_lag:.2f} days (ρ={max_corr:.3f})")
+    else:
+        # Fallback to cross-correlation
+        phase_shift_days = float(xcorr_lag)
+        method = "cross_correlation"
+        print(f"  ⚠ Phase shift: {phase_shift_days:.2f} days (cross-corr fallback, ρ={max_corr:.3f})")
+    
+    # Compute phase shift per meter
+    depth_diff = depth_black - depth_white
+    phase_shift_per_m = phase_shift_days / depth_diff if depth_diff > 0 else np.nan
+    
+    print(f"  → {phase_shift_per_m:.2f} days/m depth\n")
+    
+    return {
+        "phase_shift_days": float(phase_shift_days),
+        "phase_shift_hours": float(phase_shift_days * 24),
+        "phase_shift_per_meter_days": float(phase_shift_per_m),
+        "phase_shift_per_meter_hours": float(phase_shift_per_m * 24),
+        "correlation": float(max_corr),
+        "n_peaks_matched": int(n_peaks),
+        "n_troughs_matched": int(n_troughs),
+        "white_amplitude": float(white_amp),
+        "black_amplitude": float(black_amp),
+        "depth_white": float(depth_white),
+        "depth_black": float(depth_black),
+        "depth_difference": float(depth_diff),
+        "white_peaks_times": [t.strftime('%Y-%m-%d') for t in white_peaks],
+        "black_peaks_times": [t.strftime('%Y-%m-%d') for t in black_peaks],
+        "white_troughs_times": [t.strftime('%Y-%m-%d') for t in white_troughs],
+        "black_troughs_times": [
+            t.strftime('%Y-%m-%d') + (" ⭐" if is_extrapolated and i == len(black_troughs)-1 else "")
+            for i, t in enumerate(black_troughs)
+        ],
+        "method": method,
+        "extrapolated": is_extrapolated
+    }
 
-    df_valid = df[["glacier", "zaa_depth"]].copy()
-    grouped = df_valid.groupby("glacier", dropna=False)
+def compute_tynitag_phase_shift_batch(
+    entries,
+    *,
+    resample="1D",
+    smooth_window="7D",
+    reference_probe="white",
+    plot_summary=False,
+    save_path=None
+):
+    """
+    Compute phase shift for multiple TinyTag boreholes.
+    
+    Parameters
+    ----------
+    entries : list of dict
+        Each dict must contain:
+        - name : str (borehole name)
+        - glacier : str
+        - df : pd.DataFrame (with TIME, Black/White Probe Temperature columns)
+        - depth_white : float
+        - depth_black : float
+    resample : str
+        Resampling frequency
+    smooth_window : str
+        Smoothing window
+    reference_probe : str
+        Reference probe for phase calculation
+    plot_summary : bool, default False
+        If True, create summary plots
+    save_path : str, optional
+        Path to save summary plots (if plot_summary=True)
+    
+    Returns
+    -------
+    pd.DataFrame with columns:
+        name, glacier, phase_shift_days, phase_shift_hours,
+        phase_shift_per_meter_days, phase_shift_per_meter_hours,
+        correlation, n_peaks_matched, n_troughs_matched,
+        white_amplitude, black_amplitude, depth_white, 
+        depth_black, depth_difference, method, extrapolated
+    """
+    import pandas as pd
+    import numpy as np
+    
+    results = []
+    
+    for e in entries:
+        name = e.get("name")
+        glacier = e.get("glacier")
+        df = e.get("df")
+        depth_white = e.get("depth_white")
+        depth_black = e.get("depth_black")
+        
+        try:
+            res = compute_tynitag_phase_shift(
+                df,
+                depth_white=depth_white,
+                depth_black=depth_black,
+                resample=resample,
+                smooth_window=smooth_window,
+                reference_probe=reference_probe
+            )
+            
+            results.append({
+                "name": name,
+                "glacier": glacier,
+                "phase_shift_days": res["phase_shift_days"],
+                "phase_shift_hours": res["phase_shift_hours"],
+                "phase_shift_per_meter_days": res["phase_shift_per_meter_days"],
+                "phase_shift_per_meter_hours": res["phase_shift_per_meter_hours"],
+                "correlation": res["correlation"],
+                "n_peaks_matched": res["n_peaks_matched"],
+                "n_troughs_matched": res["n_troughs_matched"],
+                "white_amplitude": res["white_amplitude"],
+                "black_amplitude": res["black_amplitude"],
+                "depth_white": res["depth_white"],
+                "depth_black": res["depth_black"],
+                "depth_difference": res["depth_difference"],
+                "method": res["method"],
+                "extrapolated": res["extrapolated"]
+            })
+            
+            print(f"{name} ({glacier}): "
+                  f"phase shift = {res['phase_shift_days']:.2f} days "
+                  f"({res['phase_shift_per_meter_days']:.3f} days/m), "
+                  f"corr = {res['correlation']:.3f}, "
+                  f"{res['n_peaks_matched']} peaks + {res['n_troughs_matched']} troughs matched, "
+                  f"Δdepth = {res['depth_difference']:.2f} m")
+            
+        except Exception as ex:
+            print(f"Phase shift calculation failed for {name} ({glacier}): {ex}")
+            results.append({
+                "name": name,
+                "glacier": glacier,
+                "phase_shift_days": np.nan,
+                "phase_shift_hours": np.nan,
+                "phase_shift_per_meter_days": np.nan,
+                "phase_shift_per_meter_hours": np.nan,
+                "correlation": np.nan,
+                "n_peaks_matched": 0,
+                "n_troughs_matched": 0,
+                "white_amplitude": np.nan,
+                "black_amplitude": np.nan,
+                "depth_white": depth_white,
+                "depth_black": depth_black,
+                "depth_difference": depth_black - depth_white if depth_white and depth_black else np.nan,
+                "method": "failed",
+                "extrapolated": False
+            })
+    
+    df_results = pd.DataFrame(results)
+    
+    # Create summary plots if requested
+    if plot_summary:
+        import matplotlib.pyplot as plt
+        
+        # Filter valid results for plotting
+        valid = df_results[df_results['phase_shift_per_meter_days'].notna()].copy()
+        
+        if len(valid) == 0:
+            print("Warning: No valid phase shift results to plot")
+            return df_results
+        
+        fig, axes = plt.subplots(1, 3, figsize=(16, 5), dpi=150)
+        
+        # Plot 1: Phase shift per meter vs depth difference
+        ax1 = axes[0]
+        colors = {'extrema_median': '#2E86AB', 'extrema_median_extrapolated': '#A23B72',
+                 'extrema_single': '#F18F01', 'extrema_single_extrapolated': '#C73E1D',
+                 'cross_correlation': '#6C757D'}
+        
+        for _, row in valid.iterrows():
+            color = colors.get(row['method'], '#000000')
+            marker = 'D' if row['extrapolated'] else 'o'
+            ax1.scatter(row['depth_difference'], row['phase_shift_per_meter_days'], 
+                       s=150, alpha=0.7, label=row['name'], color=color, marker=marker,
+                       edgecolors='white', linewidth=1.5)
+            # Add value annotation
+            ax1.annotate(f"{row['phase_shift_per_meter_days']:.2f}",
+                        xy=(row['depth_difference'], row['phase_shift_per_meter_days']),
+                        xytext=(5, 5), textcoords='offset points', 
+                        fontsize=9, fontweight='bold')
+        
+        ax1.set_xlabel('Depth Difference (m)', fontsize=12, fontweight='bold')
+        ax1.set_ylabel('Phase Shift per Meter (days/m)', fontsize=12, fontweight='bold')
+        ax1.set_title('Phase Shift Rate vs Probe Separation', fontsize=13, fontweight='bold')
+        ax1.grid(True, alpha=0.3)
+        ax1.legend(fontsize=9, loc='best')
+        
+        # Plot 2: Phase shift per meter by borehole (bar chart)
+        ax2 = axes[1]
+        names = valid['name'].values
+        phase_per_m = valid['phase_shift_per_meter_days'].values
+        extrapolated = valid['extrapolated'].values
+        
+        # Color bars based on whether extrapolated
+        colors_bars = ['#A23B72' if ext else '#2E86AB' for ext in extrapolated]
+        
+        bars = ax2.bar(names, phase_per_m, color=colors_bars, alpha=0.7, edgecolor='black', linewidth=1.5)
+        ax2.set_ylabel('Phase Shift per Meter (days/m)', fontsize=12, fontweight='bold')
+        ax2.set_title('Phase Shift Rate by Borehole', fontsize=13, fontweight='bold')
+        ax2.grid(True, axis='y', alpha=0.3)
+        ax2.tick_params(axis='x', rotation=45)
+        
+        # Add value labels on bars
+        for bar, val, ext in zip(bars, phase_per_m, extrapolated):
+            height = bar.get_height()
+            label = f'{val:.2f}' + (' ⭐' if ext else '')
+            ax2.text(bar.get_x() + bar.get_width()/2., height + max(phase_per_m)*0.02,
+                    label, ha='center', va='bottom', fontsize=10, fontweight='bold')
+        
+        # Add legend for extrapolated vs measured
+        from matplotlib.patches import Patch
+        legend_elements = [
+            Patch(facecolor='#2E86AB', edgecolor='black', label='Measured'),
+            Patch(facecolor='#A23B72', edgecolor='black', label='Extrapolated ⭐')
+        ]
+        ax2.legend(handles=legend_elements, loc='upper right', fontsize=9)
+        
+        # Plot 3: Correlation quality
+        ax3 = axes[2]
+        correlations = valid['correlation'].values
+        colors_corr = ['#2E86AB' if c > 0.7 else '#F18F01' if c > 0.4 else '#A23B72' for c in correlations]
+        bars = ax3.bar(names, correlations, color=colors_corr, alpha=0.7, edgecolor='black', linewidth=1.5)
+        ax3.set_ylabel('Cross-Correlation Coefficient', fontsize=12, fontweight='bold')
+        ax3.set_title('Phase Shift Correlation Quality', fontsize=13, fontweight='bold')
+        ax3.axhline(y=0.7, color='green', linestyle='--', linewidth=2, alpha=0.5, label='High quality (ρ > 0.7)')
+        ax3.axhline(y=0.4, color='orange', linestyle='--', linewidth=2, alpha=0.5, label='Medium quality (ρ > 0.4)')
+        ax3.set_ylim([0, 1])
+        ax3.legend(fontsize=9, loc='lower right')
+        ax3.grid(True, axis='y', alpha=0.3)
+        ax3.tick_params(axis='x', rotation=45)
+        
+        # Add correlation values on bars
+        for bar, corr in zip(bars, correlations):
+            height = bar.get_height()
+            ax3.text(bar.get_x() + bar.get_width()/2., height + 0.02,
+                    f'{corr:.3f}', ha='center', va='bottom', fontsize=10, fontweight='bold')
+        
+        plt.tight_layout()
+        
+        if save_path:
+            plt.savefig(save_path, dpi=300, bbox_inches='tight')
+            print(f"\nSummary plot saved to: {save_path}")
+        
+        plt.show()
+    
+    return df_results
 
-    summary = grouped.agg(
-        zaa_mean=("zaa_depth", "mean"),
-        zaa_min=("zaa_depth", "min"),
-        zaa_max=("zaa_depth", "max"),
-        n=("zaa_depth", "count"),
+
+def summarize_phase_shift_by_glacier(phase_df):
+    """
+    Summarize phase shift metrics by glacier.
+    
+    Parameters
+    ----------
+    phase_df : pd.DataFrame
+        Output from compute_tynitag_phase_shift_batch
+    
+    Returns
+    -------
+    pd.DataFrame with columns:
+        glacier, phase_mean_days, phase_std_days, phase_min_days, 
+        phase_max_days, n_boreholes
+    """
+    summary = phase_df.groupby("glacier", dropna=False).agg(
+        phase_mean_days=("phase_shift_days", "mean"),
+        phase_std_days=("phase_shift_days", "std"),
+        phase_min_days=("phase_shift_days", "min"),
+        phase_max_days=("phase_shift_days", "max"),
+        n_boreholes=("phase_shift_days", "count")
     ).reset_index()
-
-    summary["zaa_range"] = summary["zaa_max"] - summary["zaa_min"]
+    
     return summary.sort_values("glacier").reset_index(drop=True)

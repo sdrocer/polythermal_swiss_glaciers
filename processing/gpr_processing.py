@@ -151,13 +151,23 @@ def load_points_from_csv(paths, epsg=2056, source_epsg=None, drop_duplicates=Tru
     frames = [read_thickness_csv(p) for p in paths]
     df = pd.concat(frames, ignore_index=True)
     
-    # Clean profile column: remove "LINE" prefix and keep only the number
+    # Clean profile column: extract numeric part from various naming conventions
+    # Handles: LINE1, line1, centerline1, centerline_1, PROFILE1, etc.
     if 'profile' in df.columns:
-        df['profile'] = df['profile'].astype(str).str.replace(r'^LINE', '', regex=True, case=False)
-        try:
-            df['profile'] = pd.to_numeric(df['profile'])
-        except (ValueError, TypeError):
-            pass
+        def extract_profile_number(val):
+            """Extract numeric part from profile name"""
+            if pd.isna(val):
+                return val
+            s = str(val).strip()
+            # Remove common prefixes (case-insensitive)
+            s = re.sub(r'^(LINE|CENTERLINE|PROFILE|TRANSECT|TRACK)[-_\s]*', '', s, flags=re.IGNORECASE)
+            # Extract first number found
+            match = re.search(r'\d+', s)
+            if match:
+                return int(match.group(0))
+            return s  # Keep original if no number found
+        
+        df['profile'] = df['profile'].apply(extract_profile_number)
     
     # Clean data
     df = df.replace([np.inf, -np.inf], np.nan)
@@ -217,14 +227,6 @@ def load_points_from_csv(paths, epsg=2056, source_epsg=None, drop_duplicates=Tru
         return df
     
     # Return GeoDataFrame - preserve all columns, just add geometry
-    gdf = gpd.GeoDataFrame(
-        df,
-        geometry=[Point(xy) for xy in zip(df['x'].values, df['y'].values)],
-        crs=f"EPSG:{epsg}"
-    )
-    return gdf
-    
-    # Return GeoDataFrame (default behavior)
     gdf = gpd.GeoDataFrame(
         df,
         geometry=[Point(xy) for xy in zip(df['x'].values, df['y'].values)],

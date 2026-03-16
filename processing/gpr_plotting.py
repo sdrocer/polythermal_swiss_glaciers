@@ -142,7 +142,7 @@ def thickness_levels(grids: list, step: float = 10.0) -> np.ndarray:
     return np.arange(0.0, top + step, step, dtype=float)
 
 def plot_thickness_contours(
-    ax, grid, transform, *,
+    ax, grid, transform=None, *,
     levels: np.ndarray | None = None,
     step: float = 10.0,
     minor_kwargs=None,
@@ -154,32 +154,127 @@ def plot_thickness_contours(
 ):
     """
     Draw thickness contours (minor every 'step', major every 5*step).
-    Returns (cs_minor, cs_major, levels).
+    
+    Parameters
+    ----------
+    ax : matplotlib.axes.Axes
+        Axes to plot on
+    grid : np.ndarray or str or Path
+        Either a 2D array or path to a GeoTIFF file
+    transform : affine.Affine, optional
+        Affine transform (required if grid is an array, ignored if grid is a path)
+    levels : np.ndarray, optional
+        Custom contour levels (overrides step)
+    step : float
+        Contour spacing in meters (used to generate levels if not provided)
+    minor_kwargs : dict, optional
+        Style kwargs for minor contours
+    major_kwargs : dict, optional
+        Style kwargs for major contours
+    label_major : bool
+        Whether to label major contours
+    label_fmt : str
+        Format string for contour labels
+    zorder_minor : int
+        Drawing order for minor contours
+    zorder_major : int
+        Drawing order for major contours
+        
+    Returns
+    -------
+    cs_minor : matplotlib.contour.QuadContourSet or None
+        Minor contour set
+    cs_major : matplotlib.contour.QuadContourSet or None
+        Major contour set
+    levels : np.ndarray
+        The contour levels used
     """
+    import os
+    
+    # Check if grid is a file path
+    if isinstance(grid, (str, os.PathLike)):
+        try:
+            with rasterio.open(grid) as src:
+                arr = src.read(1, masked=True).astype(float)
+                tfm = src.transform
+        except Exception as e:
+            raise ValueError(f"Could not read TIF file: {grid}. Error: {e}")
+    else:
+        # grid is an array
+        if transform is None:
+            raise ValueError("transform is required when passing a grid array")
+        arr = grid
+        tfm = transform
+    
+    # Generate levels if not provided
     if levels is None:
-        levels = thickness_levels([grid], step=step)
-    X, Y = grid_coords_from_transform(transform, grid.shape)
+        levels = thickness_levels([arr], step=step)
+    
+    X, Y = grid_coords_from_transform(tfm, arr.shape)
 
     minor_kwargs = {'colors': 'k', 'linewidths': 0.25, 'alpha': 0.35} | (minor_kwargs or {})
     major_kwargs = {'colors': 'k', 'linewidths': 0.6,  'alpha': 0.7}  | (major_kwargs or {})
 
-    cs_minor = ax.contour(X, Y, grid, levels=levels, zorder=zorder_minor, **minor_kwargs)
+    cs_minor = ax.contour(X, Y, arr, levels=levels, zorder=zorder_minor, **minor_kwargs)
     majors = levels[(levels % (step * 5)) == 0]
     cs_major = None
     if majors.size > 0:
-        cs_major = ax.contour(X, Y, grid, levels=majors, zorder=zorder_major, **major_kwargs)
+        cs_major = ax.contour(X, Y, arr, levels=majors, zorder=zorder_major, **major_kwargs)
         if label_major:
             ax.clabel(cs_major, inline=True, fmt=label_fmt, fontsize=8)
     return cs_minor, cs_major, levels
 
-def imshow_grid(ax, grid, transform, *, cmap=cmc.batlow_r, alpha=0.7, vmin=None, vmax=None, norm=None, zorder=3):
+def imshow_grid(ax, grid, transform=None, *, cmap=cmc.batlow_r, alpha=0.7, vmin=None, vmax=None, norm=None, zorder=3):
     """
     Shorthand to imshow a georeferenced grid. Returns (image, extent).
     Supports either vmin/vmax or norm (norm takes precedence).
+    
+    Parameters
+    ----------
+    ax : matplotlib.axes.Axes
+        Axes to plot on
+    grid : np.ndarray or str or Path
+        Either a 2D array or path to a GeoTIFF file
+    transform : affine.Affine, optional
+        Affine transform (required if grid is an array, ignored if grid is a path)
+    cmap : colormap
+        Matplotlib colormap
+    alpha : float
+        Transparency (0-1)
+    vmin, vmax : float, optional
+        Value range for colormap (ignored if norm is provided)
+    norm : matplotlib.colors.Normalize, optional
+        Normalization for colormap (takes precedence over vmin/vmax)
+    zorder : int
+        Drawing order
+        
+    Returns
+    -------
+    im : matplotlib.image.AxesImage
+        The image object
+    extent : tuple
+        (xmin, xmax, ymin, ymax) extent
     """
-    extent = compute_extent(transform, grid.shape)
+    import os
+    
+    # Check if grid is a file path
+    if isinstance(grid, (str, os.PathLike)):
+        try:
+            with rasterio.open(grid) as src:
+                arr = src.read(1, masked=True).astype(float)
+                tfm = src.transform
+        except Exception as e:
+            raise ValueError(f"Could not read TIF file: {grid}. Error: {e}")
+    else:
+        # grid is an array
+        if transform is None:
+            raise ValueError("transform is required when passing a grid array")
+        arr = grid
+        tfm = transform
+    
+    extent = compute_extent(tfm, arr.shape)
     im = ax.imshow(
-        grid, extent=extent, origin='upper', cmap=cmap, alpha=alpha,
+        arr, extent=extent, origin='upper', cmap=cmap, alpha=alpha,
         vmin=None if norm is not None else vmin,
         vmax=None if norm is not None else vmax,
         norm=norm, zorder=zorder
@@ -796,17 +891,18 @@ def _discrete_icetemp_cmap_from_levels(levels):
         colors = np.array(cmc.vik(1.0)).reshape(1, -1)
     else:
         if n_int > 1:
-            blue = cmc.vik(np.linspace(0.0, 0.5, n_int-1))
-            red  = np.array(cmc.vik(1.0)).reshape(1, -1)
+            blue = cmc.vik(np.linspace(0.0, 0.55, n_int-1))
+            red  = np.array(cmc.vik(0.95)).reshape(1, -1)
             colors = np.vstack([blue, red])
         else:
             colors = np.array(cmc.vik(1.0)).reshape(1, -1)
     return ListedColormap(colors, name='icetemp_discrete')
 
-def _interpolate_segment(prof_seg, borehole_coords_df, temp_data_dict, depth_dict, n_depth, n_elev):
+def _interpolate_segment(prof_seg, borehole_coords_df, temp_data_dict, depth_dict, n_depth, n_elev, rbf_smooth):
     return interpolate_glacier_temperature_field_2d(
         prof_seg, borehole_coords_df, temp_data_dict, depth_dict,
-        n_depth=n_depth, n_elev=n_elev
+        n_depth=n_depth, n_elev=n_elev,
+        rbf_smooth=rbf_smooth
     )
 
 def _mask_inside(T, elevs, xnodes, zs_on_x, zb_on_x):
@@ -816,16 +912,23 @@ def _mask_inside(T, elevs, xnodes, zs_on_x, zb_on_x):
 
 def _extract_temperate_layers(T_masked, elevs, xnodes, zs_on_x, zb_on_x,
                               adjust_cts_for_pressure, cts_tol):
+    """
+    Extract CTS using VERTICAL depth for pressure (gravity-based overburden).
+    """
     if adjust_cts_for_pressure:
+        # Pressure uses VERTICAL overburden (straight down with gravity)
         XX, YY = np.meshgrid(xnodes, elevs)
-        h_over = (zs_on_x[None, :] - YY)
-        Tm = melting_point_at_pressure(h_over)
+        h_vertical = (zs_on_x[None, :] - YY)  # Vertical distance to surface
+        Tm = melting_point_at_pressure(h_vertical)  # Pressure from vertical column
         diff = T_masked - Tm
     else:
         diff = T_masked
+    
     temperate_mask = (~T_masked.mask) & (np.abs(diff.data) <= cts_tol)
+    
     if not temperate_mask.any():
         return None
+    
     try:
         from scipy.ndimage import binary_closing, binary_opening
         temperate_mask = binary_closing(temperate_mask, structure=np.ones((3,3)))
@@ -915,8 +1018,8 @@ def _plot_cts_layers(ax, elevs, xnodes, zs_on_x, zb_on_x, info, cts_tol,
             lbl = None
 
         if is_basal:
-            ax.plot(xnodes[cols], run_top, color='black',
-                    linestyle=':', linewidth=2.0, label=lbl, zorder=15)
+            ax.plot(xnodes[cols], run_top, color='red',
+                    linestyle=':', linewidth=2.0, label=lbl, zorder=10)
             continue
 
         # internal lens: check cold ice below
@@ -940,7 +1043,7 @@ def _plot_cts_layers(ax, elevs, xnodes, zs_on_x, zb_on_x, info, cts_tol,
         cold_frac = np.count_nonzero(cold_under)/len(cold_under) if cold_under else 0.0
 
         ax.plot(xnodes[cols], run_top, color='red',
-                linestyle=':', linewidth=2.0, label=lbl, zorder=15)
+                linestyle=':', linewidth=2.0, label=lbl, zorder=10)
         if cold_frac >= cold_under_frac_threshold:
             ax.plot(xnodes[cols], run_bot, color='red',
                     linestyle=':', linewidth=2.0, zorder=14)
@@ -974,10 +1077,11 @@ def _sample_every(x, step):
             last = x[i]
     return np.array(idx, dtype=int)
 
-def _draw_panel_tag(ax, text, loc="TR", *, bbox=True, tag_kwargs=None, pad_pt=8, fontsize=18):
+def _draw_panel_tag(ax, text, loc="TR", *, bbox=True, tag_kwargs=None, pad_pt=8, fontsize=18, color='red'):
     """
     Draw a corner label inside the axes with a slight inward offset and translucent box.
     loc: 'TL'|'TR'|'BL'|'BR'
+    color: text color and box edge color (default 'red')
     """
     from matplotlib.transforms import offset_copy
 
@@ -990,13 +1094,13 @@ def _draw_panel_tag(ax, text, loc="TR", *, bbox=True, tag_kwargs=None, pad_pt=8,
     }.get(loc, (1.0, 1.0, "right", "top", -pad_pt, -pad_pt))
     x, y, ha, va, dx, dy = corner
 
-    # Configure default rounded white box with slight transparency
+    # Configure bbox properties (FIXED: check type BEFORE creating default)
     if isinstance(bbox, dict):
         bbox_props = bbox
     elif bbox:
         bbox_props = dict(
             facecolor="white",
-            edgecolor="red",
+            edgecolor=color,  # Now uses the color parameter
             boxstyle="round,pad=0.25",
             linewidth=1.2,
             alpha=0.85,
@@ -1008,7 +1112,7 @@ def _draw_panel_tag(ax, text, loc="TR", *, bbox=True, tag_kwargs=None, pad_pt=8,
     tr = offset_copy(ax.transAxes, fig=ax.figure, x=dx, y=dy, units="points")
 
     tk = dict(
-        fontsize=fontsize, color="red", fontweight="bold",
+        fontsize=fontsize, color=color, fontweight="bold",
         ha=ha, va=va, transform=tr, zorder=30, clip_on=True,
     )
     if tag_kwargs:
@@ -1040,7 +1144,7 @@ def plot_icetemp_profile(
     # Whiskers
     bed_uncertainty=None,
     bed_unc_every: float = 25.0,
-    bed_unc_color: str = '0.3',
+    bed_unc_color: str = 'dimgray',
     bed_unc_capsize: float = 3.0,
     bed_unc_lw: float = 1.0,
     bed_unc_alpha: float = 0.9,
@@ -1054,23 +1158,37 @@ def plot_icetemp_profile(
     cbar_tick_step: float | None = None,
     # Panel tag
     panel_tag: str | None = None,
+    panel_tag_color: str = 'red',
     tag_loc: str = "TR",
     tag_bbox: bool | dict = True,
     tag_kwargs: dict | None = None,
+    # Export paths
     export_txt_path: str = None,
-    export_borehole_txt_path: str = None,  # <-- NEW ARGUMENT
-    continuous_cmap: bool = False,  # <-- NEW ARGUMENT
+    export_borehole_txt_path: str = None,
+    export_cts_mask_path: str = None,
+    continuous_cmap: bool = False,
+    # interpolation
+    rbf_smooth: float = 0.05,
+    # Manual hatching/shading control
+    hatch_regions: list[tuple[float, float]] | None = None,
+    hatch_pattern: str = '///',
+    hatch_color: str = 'grey',
+    hatch_alpha: float = 0.0,
+    hatch_linewidth: float = 0.5,
+    hatch_fill_color: str | None = None,
     **deprecated
 ):
     """
-    Single interpolated englacial temperature profile.
-
-    New:
-    - cbar_min to fix colorbar lower bound
-    - bh_marker_size / bh_line_lw to control chain sizes
-    - whiskers via bed_uncertainty* args
-    - allow_bh_overlap/bh_edge_pad
-    - export_txt_path: path to save interpolated temperature matrix as TXT
+    Single interpolated englacial temperature profile with export functionality.
+    
+    Export Parameters
+    -----------------
+    export_txt_path : str, optional
+        Path to export the temperature grid as tab-delimited text file
+    export_borehole_txt_path : str, optional
+        Path to export borehole temperatures as CSV file
+    export_cts_mask_path : str, optional
+        Path to export CTS mask as tab-delimited text file
     """
     for k in list(deprecated.keys()):
         print(f"[plot_icetemp_profile] Ignoring unknown/deprecated argument: {k}")
@@ -1080,8 +1198,7 @@ def plot_icetemp_profile(
     prof_flipped = prof.copy()
     clip_mask = None
     borehole_locs_for_pad = []
-
-    borehole_export_rows = []  # Collect borehole export data
+    borehole_export_rows = []
 
     if borehole_clip_buffer is not None and float(borehole_clip_buffer) >= 0:
         prof_has_xy = ('x' in prof.columns) and ('y' in prof.columns)
@@ -1123,24 +1240,22 @@ def plot_icetemp_profile(
                 prof = prof.loc[clip_mask].reset_index(drop=True)
         borehole_locs_for_pad = bh_locs
 
-     # Color mapping (honor cbar_min)
+    # Color mapping
     measured = _collect_measured_values(temp_data_dict)
     if cbar_min is not None:
         measured = np.append(measured, float(cbar_min))
     levels = _temperature_levels(measured, temp_step)
 
     if continuous_cmap:
-        # Use continuous colormap and Normalize
         cmap = cmap or cmc.vik
         vmin = float(measured.min())
         vmax = float(measured.max())
         norm = plt.Normalize(vmin=vmin, vmax=vmax)
     else:
-        # Use discrete colormap and BoundaryNorm
         cmap = cmap or _discrete_icetemp_cmap_from_levels(levels)
         norm = BoundaryNorm(levels, cmap.N, clip=True)
 
-    # Prepare whisker uncertainty array
+    # Whisker uncertainty array
     unc_arr = None
     if bed_uncertainty is not None:
         try:
@@ -1159,8 +1274,8 @@ def plot_icetemp_profile(
     segments = _segment_indices(dist, float(break_threshold))
     im = None; first_seg = True; cts_label_done = False
 
-    # For TXT export: only save for the first segment
     txt_exported = False
+    cts_mask_exported = False
 
     for (i0, i1) in segments:
         if i1 - i0 < 2:
@@ -1172,7 +1287,7 @@ def plot_icetemp_profile(
 
         try:
             T_seg, elevs_seg, xnodes_seg = _interpolate_segment(
-                prof_seg, borehole_coords_df, temp_data_dict, depth_dict, n_depth, n_elev
+                prof_seg, borehole_coords_df, temp_data_dict, depth_dict, n_depth, n_elev, rbf_smooth=rbf_smooth
             )
         except Exception as e:
             print(f"Interpolation failed: {e}")
@@ -1190,15 +1305,60 @@ def plot_icetemp_profile(
             ax.contour(XX, YY, T_masked, levels=levels[:-1],
                     colors='k', linewidths=0.6, alpha=0.45, zorder=5)
 
+        # Apply manual hatching regions
+        if hatch_regions is not None:
+            for (dist_min, dist_max) in hatch_regions:
+                in_range = (xnodes_seg >= dist_min) & (xnodes_seg <= dist_max)
+                if not np.any(in_range):
+                    continue
+                
+                x_subset_idx = np.where(in_range)[0]
+                if len(x_subset_idx) == 0:
+                    continue
+                
+                x_min_idx = x_subset_idx.min()
+                x_max_idx = x_subset_idx.max()
+                
+                shade_mask = np.zeros_like(T_masked.data, dtype=float)
+                for j in range(x_min_idx, x_max_idx + 1):
+                    inside = (elevs_seg >= zb_on_x[j]) & (elevs_seg <= zs_on_x[j])
+                    shade_mask[inside, j] = 1.0
+                
+                shade_mask = np.ma.masked_where(shade_mask == 0, shade_mask)
+                
+                if hatch_fill_color is not None:
+                    ax.contourf(
+                        xnodes_seg, elevs_seg, shade_mask,
+                        levels=[0.5, 1.5],
+                        colors=[hatch_fill_color],
+                        alpha=hatch_alpha if hatch_alpha > 0 else 0.5,
+                        zorder=11,
+                        antialiased=True
+                    )
+                
+                if hatch_pattern and hatch_pattern.strip():
+                    ax.contourf(
+                        xnodes_seg, elevs_seg, shade_mask,
+                        levels=[0.5, 1.5],
+                        colors='none',
+                        hatches=[hatch_pattern],
+                        alpha=hatch_alpha,
+                        zorder=12,
+                        edgecolors=hatch_color,
+                        linewidths=hatch_linewidth
+                    )
+
+        # CTS
+        cts_info = None
         if show_cts:
-            info = _extract_temperate_layers(
+            cts_info = _extract_temperate_layers(
                 T_masked, elevs_seg, xnodes_seg, zs_on_x, zb_on_x,
                 adjust_cts_for_pressure, cts_tol
             )
-            if info is not None:
+            if cts_info is not None:
                 cts_label_done = _plot_cts_layers(
                     ax, elevs_seg, xnodes_seg, zs_on_x, zb_on_x,
-                    info, cts_tol, adjust_cts_for_pressure, cts_label_done
+                    cts_info, cts_tol, adjust_cts_for_pressure, cts_label_done
                 )
 
         ax.plot(seg_dist, zs_seg, color='k', lw=1.4,
@@ -1215,12 +1375,13 @@ def plot_icetemp_profile(
                             capsize=bed_unc_capsize, capthick=bed_unc_lw,
                             alpha=bed_unc_alpha, zorder=11, clip_on=False)
 
-        # Export TXT only for the first segment and only once
+        # Export temperature grid (only once for first segment)
         if export_txt_path is not None and not txt_exported:
             try:
                 with open(export_txt_path, "w") as f:
+                    # Header: distance values
                     f.write("elev/distance\t" + "\t".join([f"{x:.2f}" for x in xnodes_seg]) + "\n")
-                    # FLIP: reverse elevs_seg and T_masked rows
+                    # Rows: elevation followed by temperature values
                     for k, elev in reversed(list(enumerate(elevs_seg))):
                         row = [f"{elev:.2f}"]
                         for j in range(len(xnodes_seg)):
@@ -1230,10 +1391,46 @@ def plot_icetemp_profile(
                             else:
                                 row.append(f"{val:.4f}")
                         f.write("\t".join(row) + "\n")
-                print(f"[plot_icetemp_profile] Exported TXT to: {export_txt_path}")
+                print(f"[plot_icetemp_profile] Exported temperature grid to: {export_txt_path}")
             except Exception as e:
-                print(f"[plot_icetemp_profile] Could not export TXT: {e}")
+                print(f"[plot_icetemp_profile] Could not export temperature grid: {e}")
             txt_exported = True
+
+        # Export CTS mask (only once for first segment)
+        if export_cts_mask_path is not None and not cts_mask_exported and show_cts:
+            try:
+                cts_mask = np.zeros_like(T_masked.data, dtype=int)
+                if cts_info is not None:
+                    if adjust_cts_for_pressure:
+                        XX, YY = np.meshgrid(xnodes_seg, elevs_seg)
+                        h_over = (zs_on_x[None, :] - YY)
+                        Tm = melting_point_at_pressure(h_over)
+                        diff = T_masked - Tm
+                    else:
+                        diff = T_masked
+                    temperate_mask = (~T_masked.mask) & (np.abs(diff.data) <= cts_tol)
+                    try:
+                        from scipy.ndimage import binary_closing, binary_opening
+                        temperate_mask = binary_closing(temperate_mask, structure=np.ones((3,3)))
+                        temperate_mask = binary_opening(temperate_mask, structure=np.ones((2,2)))
+                    except Exception:
+                        pass
+                    cts_mask[temperate_mask] = 1
+                
+                with open(export_cts_mask_path, "w") as f:
+                    f.write("elev/distance\t" + "\t".join([f"{x:.2f}" for x in xnodes_seg]) + "\n")
+                    for k, elev in reversed(list(enumerate(elevs_seg))):
+                        row = [f"{elev:.2f}"]
+                        for j in range(len(xnodes_seg)):
+                            if T_masked.mask[k, j]:
+                                row.append("nan")
+                            else:
+                                row.append(str(cts_mask[k, j]))
+                        f.write("\t".join(row) + "\n")
+                print(f"[plot_icetemp_profile] Exported CTS mask to: {export_cts_mask_path}")
+            except Exception as e:
+                print(f"[plot_icetemp_profile] Could not export CTS mask: {e}")
+            cts_mask_exported = True
 
         first_seg = False
 
@@ -1241,6 +1438,13 @@ def plot_icetemp_profile(
     prof_has_xy = ('x' in prof.columns) and ('y' in prof.columns)
     prof_xy = np.column_stack([prof['x'], prof['y']]) if prof_has_xy else None
     bh_locs_for_limits = []
+    # Auto-generate romaO label colors when none provided
+    _bh_names_ordered = [r.get('name') for _, r in borehole_coords_df.iterrows()
+                         if r.get('name') in temp_data_dict and r.get('name') in depth_dict]
+    _n_bh = max(len(_bh_names_ordered), 1)
+    _bh_auto_colors = {n: cmc.romaO(float(p))
+                       for n, p in zip(_bh_names_ordered,
+                                       np.linspace(0.05, 0.75, _n_bh))}
     for _, r in borehole_coords_df.iterrows():
         name = r.get('name')
         if name not in temp_data_dict or name not in depth_dict:
@@ -1256,7 +1460,6 @@ def plot_icetemp_profile(
             loc = bx; surf_elev = np.interp(loc, dist, zsurf)
 
         bh_locs_for_limits.append(loc)
-
         temps = temp_data_dict[name]; depths = depth_dict[name]
         pairs = []
         for k, dep in getattr(depths, 'items', lambda: depths.items())():
@@ -1273,7 +1476,7 @@ def plot_icetemp_profile(
         dep_arr = np.array([p[0] for p in pairs])
         t_arr   = np.array([p[1] for p in pairs])
 
-        # --- Collect for borehole export ---
+        # Collect for export
         for dd, tv in zip(dep_arr, t_arr):
             borehole_export_rows.append({
                 "borehole": name,
@@ -1291,11 +1494,11 @@ def plot_icetemp_profile(
                     markersize=bh_marker_size, markerfacecolor=col,
                     markeredgecolor='black', markeredgewidth=0.4,
                     zorder=21, clip_on=not allow_bh_overlap)
-        name_color = (label_colors or {}).get(name, 'red')
+        name_color = (label_colors or {}).get(name, _bh_auto_colors.get(name, 'red'))
         ax.text(loc, surf_elev + 6, name, color=name_color, fontsize=10,
                 ha='center', va='bottom', zorder=22, clip_on=not allow_bh_overlap)
 
-    # Export borehole TXT if requested
+    # Export borehole temperatures
     if export_borehole_txt_path is not None and borehole_export_rows:
         try:
             import csv
@@ -1304,9 +1507,9 @@ def plot_icetemp_profile(
                 writer.writeheader()
                 for row in borehole_export_rows:
                     writer.writerow(row)
-            print(f"[plot_icetemp_profile] Exported borehole TXT to: {export_borehole_txt_path}")
+            print(f"[plot_icetemp_profile] Exported borehole temperatures to: {export_borehole_txt_path}")
         except Exception as e:
-            print(f"[plot_icetemp_profile] Could not export borehole TXT: {e}")
+            print(f"[plot_icetemp_profile] Could not export borehole temperatures: {e}")
 
     # Colorbar
     if im is not None:
@@ -1326,9 +1529,8 @@ def plot_icetemp_profile(
             cb.set_label('Ice Temperature [°C]')
             cb.ax.invert_xaxis()
 
-    # Corner panel tag: inside with offset and translucent box
     if panel_tag:
-        _draw_panel_tag(ax, panel_tag, loc=tag_loc, bbox=tag_bbox, tag_kwargs=tag_kwargs, pad_pt=8, fontsize=16)
+        _draw_panel_tag(ax, panel_tag, color=panel_tag_color, loc=tag_loc, bbox=tag_bbox, tag_kwargs=tag_kwargs, pad_pt=8, fontsize=16)
 
     ax.set_xlabel("Distance [m]")
     ax.set_ylabel("Elevation [m]")
@@ -1342,7 +1544,6 @@ def plot_icetemp_profile(
         ax.set_xlim(x_min, x_max)
 
     format_plot(ax=ax, title=title, x_tick_rotation=0, legend_loc='upper left', adjust_linewidths=False, base_fontsize=24)
-    # Deduplicate legend
     h, l = ax.get_legend_handles_labels()
     uniq = {};  [uniq.setdefault(li, hi) for hi, li in zip(h, l) if li]
     ax.legend(uniq.values(), uniq.keys(), frameon=True, fancybox=False, edgecolor='black',
@@ -1393,6 +1594,8 @@ def plot_icetemp_profiles_side_by_side(
     # Borehole sizes
     bh_marker_size: float = 6.0,
     bh_line_lw: float = 1.2,
+    # NEW: interpolation
+    rbf_smooth: float = 0.05,  # <-- ADD THIS PARAMETER
 ):
     """
     Side-by-side profiles with shared colorbar.
@@ -1401,6 +1604,7 @@ def plot_icetemp_profiles_side_by_side(
     - bh_marker_size / bh_line_lw to make chains/markers comparable to single-panel output
     - bed uncertainty whiskers (same options as single)
     - allow_bh_overlap/bh_edge_pad
+    - rbf_smooth: RBF smoothing parameter for interpolation
     """
     import numpy as np
     import matplotlib.pyplot as plt
@@ -1421,7 +1625,7 @@ def plot_icetemp_profiles_side_by_side(
     buffers = _as_list(borehole_clip_buffer, n_panels, None)
     label_colors_list = _as_list(label_colors_list, n_panels, None)
     bed_unc_list = _as_list(bed_uncertainty, n_panels, None)
-    tag_locs_list = _as_list(tag_locs, n_panels, "TR")    # NEW
+    tag_locs_list = _as_list(tag_locs, n_panels, "TR")
 
     # Prepare profiles (flip + optional clip) and spans
     def _prepare_with_clip(profile_df, flip, buffer_m, temp_data_dict, depth_dict):
@@ -1521,8 +1725,10 @@ def plot_icetemp_profiles_side_by_side(
             prof_seg = prof.iloc[i0:i1].copy()
 
             try:
+                # FIXED: Pass rbf_smooth parameter
                 T_seg, elevs_seg, xnodes_seg = _interpolate_segment(
-                    prof_seg, borehole_coords_df, temp_data_dict, depth_dict, n_depth, n_elev
+                    prof_seg, borehole_coords_df, temp_data_dict, depth_dict, 
+                    n_depth, n_elev, rbf_smooth=rbf_smooth
                 )
             except Exception as e:
                 print(f"Interpolation failed (segment): {e}")
@@ -1569,6 +1775,12 @@ def plot_icetemp_profiles_side_by_side(
         # Boreholes
         prof_has_xy = ('x' in prof.columns) and ('y' in prof.columns)
         prof_xy = np.column_stack([prof['x'], prof['y']]) if prof_has_xy else None
+        _bh_names_ord = [r.get('name') for _, r in borehole_coords_df.iterrows()
+                         if r.get('name') in temp_data_dict and r.get('name') in depth_dict]
+        _n_bh2 = max(len(_bh_names_ord), 1)
+        _bh_auto_col = {n: cmc.romaO(float(p))
+                for n, p in zip(_bh_names_ord,
+                        np.linspace(0.05, 0.75, _n_bh2))}
         for _, r in borehole_coords_df.iterrows():
             name = r.get('name')
             if name not in temp_data_dict or name not in depth_dict:
@@ -1608,7 +1820,7 @@ def plot_icetemp_profiles_side_by_side(
                         markeredgecolor='black', markeredgewidth=0.4,
                         zorder=21, clip_on=not allow_bh_overlap)
 
-            name_color = (label_colors or {}).get(name, 'red')
+            name_color = (label_colors or {}).get(name, _bh_auto_col.get(name, 'red'))
             ax.text(loc, surf_elev + float(bh_label_offset), name,
                     color=name_color, fontsize=18, ha='center', va='bottom',
                     zorder=22, clip_on=not allow_bh_overlap)

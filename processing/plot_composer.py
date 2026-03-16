@@ -11,6 +11,7 @@ from matplotlib.figure import Figure
 from matplotlib.patches import Rectangle
 from matplotlib.gridspec import GridSpec
 from matplotlib.ticker import MultipleLocator
+import matplotlib.transforms as mtransforms
 from matplotlib.lines import Line2D
 import cmcrameri.cm as cmc
 from PIL import Image
@@ -852,6 +853,185 @@ def build_tyntag_timeseries_one_row(
 
     return fig
 
+def build_tyntag_timeseries_two_row(
+    *,
+    top_row: tuple[str, str, str],
+    bottom_row: tuple[str, str, str],
+    plotters: dict,
+    depths_current: dict,
+    depths_initial: dict,
+    labels: dict,
+    lower_y_limit_top: float = -3.0,
+    lower_y_limit_bottom: float = -3.0,
+    figsize=(15, 9.6),
+    dpi: int = 300,
+    panel_labels: dict = {
+        "AH": "a", "CJ": "b", "HS": "c",
+        "SR": "d", "GT": "e", "CV": "f"
+    },
+    legend_position: str = "lower_right",
+    legend_fontsize: int = 11,
+    legend_labels: tuple[str, str] = ("1TT", "2TT"),
+    legend_anchor: tuple[float, float] = (0.985, -0.04),
+    base_fontsize: int = 18,
+    smooth_days: float | int | None = 0,
+    savefig_path: Union[str, Path, None] = None,
+    annotation_y=None,
+    annotation_spacing: float = 0.08,
+    annotation_arrow_hide_dy: float = 0.06,
+    annotation_dx_pts: int = 6,
+    annotation_positions=None,
+    annotation_fontsize: int | None = None,
+    xlabel_y: float = 0.012,
+    wspace: float = 0.12,
+    hspace: float = 0.25,
+    exclude_sensors: dict | None = None
+):
+    """
+    Create a 2-row × 3-column grid of TinyTag timeseries plots.
+    """
+    import matplotlib.pyplot as plt
+    from matplotlib.gridspec import GridSpec
+    from matplotlib.lines import Line2D
+    from matplotlib.ticker import MaxNLocator  # <-- NEW IMPORT
+    from processing.thermistor_plotting import build_profile_color_map
+
+    fig = plt.figure(figsize=figsize, dpi=dpi)
+    gs = GridSpec(nrows=2, ncols=3, figure=fig, wspace=wspace, hspace=hspace)
+
+    shared_y_top = None
+    shared_y_bottom = None
+    
+    all_codes = top_row + bottom_row
+    
+    for row_idx, row_codes in enumerate([top_row, bottom_row]):
+        shared_y = shared_y_top if row_idx == 0 else shared_y_bottom
+        lower_y_limit = lower_y_limit_top if row_idx == 0 else lower_y_limit_bottom
+        
+        for col_idx, code in enumerate(row_codes):
+            ax = fig.add_subplot(gs[row_idx, col_idx], sharey=shared_y)
+            
+            if shared_y is None:
+                if row_idx == 0:
+                    shared_y_top = ax
+                else:
+                    shared_y_bottom = ax
+                shared_y = ax
+
+            pl = plotters[code]
+            dcur = depths_current[code]
+            dinit = depths_initial.get(code, None)
+            blabs = labels[code]
+
+            # Handle sensor exclusion
+            if exclude_sensors and code in exclude_sensors:
+                sensors_to_exclude = set(exclude_sensors[code])
+                blabs = [lab for lab in blabs if lab not in sensors_to_exclude]
+                
+                if len(blabs) == 1 and isinstance(dcur, list) and len(dcur) == 4:
+                    orig_labels = labels[code]
+                    idx = orig_labels.index(blabs[0])
+                    if idx == 0:
+                        dcur = dcur[:2]
+                        if dinit is not None and isinstance(dinit, list) and len(dinit) == 4:
+                            dinit = dinit[:2]
+                    else:
+                        dcur = dcur[2:]
+                        if dinit is not None and isinstance(dinit, list) and len(dinit) == 4:
+                            dinit = dinit[2:]
+                
+                if code == "GT" and "GT2TT" in sensors_to_exclude and len(blabs) == 1 and blabs[0] == "GT1TT":
+                    dcur = [1.4, 6.4]
+                    dinit = [4.2, 9.2]
+
+            if isinstance(annotation_positions, dict):
+                ann_pos_panel = annotation_positions.get(code, None)
+            else:
+                ann_pos_panel = annotation_positions
+
+            pl.plot_multiple_ntc_boreholes(
+                savepath=None,
+                depths=dcur,
+                borehole_labels=blabs,
+                lower_y_limit=lower_y_limit,
+                initial_depths=dinit,
+                ax=ax,
+                show_title=False,
+                show_legend=False,
+                legend_outside=False,
+                show_xlabel=False,
+                show_xticklabels=True,
+                base_fontsize=base_fontsize,
+                smooth_days=smooth_days,
+                annotation_y=annotation_y,
+                annotation_spacing=annotation_spacing,
+                annotation_arrow_hide_dy=annotation_arrow_hide_dy,
+                annotation_dx_pts=annotation_dx_pts,
+                annotation_positions=ann_pos_panel,
+                annotation_fontsize=annotation_fontsize,
+            )
+
+            # Only leftmost column shows y-axis label
+            if col_idx > 0:
+                ax.set_ylabel("")
+                ax.tick_params(labelleft=False)
+            
+            # <-- NEW: Force integer-only y-axis ticks
+            ax.yaxis.set_major_locator(MaxNLocator(integer=True, nbins='auto'))
+
+            # Glacier code label (lower left)
+            label_color = "k"
+            ax.text(0.02, 0.02, code, transform=ax.transAxes,
+                    ha="left", va="bottom",
+                    fontsize=base_fontsize, weight="bold",
+                    color=label_color,
+                    bbox=dict(boxstyle="round,pad=0.15", fc="white", ec=label_color, alpha=0.7))
+
+            # Panel label (upper left)
+            ax.text(0.02, 0.98, f"({panel_labels.get(code, '')})", transform=ax.transAxes,
+                    ha="left", va="top",
+                    fontsize=base_fontsize, weight="bold",
+                    color="black",
+                    bbox=dict(boxstyle="round,pad=0.15", fc="white", ec="none", alpha=1.0))
+
+    # Figure-level legend with consistent colors
+    cmap = build_profile_color_map(list(legend_labels))
+    col1 = cmap[legend_labels[0]]
+    col2 = cmap[legend_labels[1]]
+    handles = [
+        Line2D([0], [0], color=col1, lw=3, linestyle='-'),
+        Line2D([0], [0], color=col2, lw=3, linestyle='-'),
+    ]
+    
+    if legend_position == "lower_right":
+        fig.legend(
+            handles, list(legend_labels),
+            loc="lower right", bbox_to_anchor=legend_anchor,
+            ncol=2,
+            frameon=True, fancybox=False, edgecolor="black", framealpha=1, facecolor="white",
+            fontsize=legend_fontsize
+        )
+        fig.subplots_adjust(left=0.07, right=0.98, top=0.96,
+                            bottom=max(0.14, xlabel_y + 0.08))
+    else:
+        fig.legend(
+            handles, list(legend_labels),
+            loc="upper center", ncol=2,
+            frameon=True, fancybox=False, edgecolor="black", framealpha=1, facecolor="white",
+            fontsize=legend_fontsize, bbox_to_anchor=(0.5, 0.985)
+        )
+        fig.subplots_adjust(top=0.91, left=0.07, right=0.98,
+                            bottom=max(0.10, xlabel_y + 0.06))
+
+    fig.supxlabel("Time", fontsize=base_fontsize, y=xlabel_y)
+
+    if savefig_path:
+        savefig_path = Path(savefig_path)
+        savefig_path.parent.mkdir(parents=True, exist_ok=True)
+        fig.savefig(savefig_path, dpi=dpi, bbox_inches="tight")
+
+    return fig
+
 def _add_corner_label(ax, text, fontsize=16, box=None):  # default +4
     if box is None:
         box = dict(facecolor="white", edgecolor="none", alpha=0.7, pad=1.0)
@@ -862,14 +1042,16 @@ def _add_corner_label(ax, text, fontsize=16, box=None):  # default +4
             bbox=box)
 
 def compose_icetemp_and_vertical_profiles(
-    left,                      # Figure | str/Path (image) | np.ndarray (H,W,4)
-    right,                     # Figure | str/Path (image) | np.ndarray (H,W,4)
+    left,
+    right,
     *,
+    radargram=None,
     figsize=(14, 5.6),
     dpi: int = 300,
-    width_ratios: Union[str, tuple[float, float]] = "auto",  # NEW: "auto" uses image aspect
+    width_ratios: Union[str, tuple[float, float]] = "auto",
     wspace: float = 0.05,
-    labels: tuple[str, str] = ("a", "b"),
+    hspace: float = 0.10,
+    labels: tuple[str, str, str] = ("a", "b", "c"),
     label_fontsize: int = 16,
     label_box: dict | None = None,
     render_dpi: int | None = 300,
@@ -878,12 +1060,10 @@ def compose_icetemp_and_vertical_profiles(
     savefig_path: Union[str, Path, None] = None,
 ):
     """
-    Compose a 2‑panel figure:
-      - left  panel: ice temperature profile (plot_icetemp_profile) -> annotated 'A'
-      - right panel: multiple vertical profiles (plot_multiple_temperature_profiles) -> annotated 'B'
-
-    Arguments 'left' and 'right' can be Figure, image path, or RGBA ndarray.
-    Panels are rendered with aspect='auto' to guarantee equal visual height.
+    Compose a 2‑ or 3‑panel figure:
+      - left  panel (a): ice temperature profile
+      - right panel (b): multiple vertical profiles
+      - optional bottom panel (c): radargram spanning full width (preserving aspect ratio)
     """
     import matplotlib.pyplot as plt
     from matplotlib.gridspec import GridSpec
@@ -891,6 +1071,8 @@ def compose_icetemp_and_vertical_profiles(
     from PIL import Image
 
     def _to_rgba(obj):
+        if obj is None:
+            return None
         if isinstance(obj, Figure):
             return _figure_to_array(obj, dpi=render_dpi)
         if isinstance(obj, (str, Path)):
@@ -901,10 +1083,6 @@ def compose_icetemp_and_vertical_profiles(
         raise TypeError(f"Unsupported type for panel: {type(obj)}")
 
     def _trim_rgba_border(arr: np.ndarray, tol: int = 5) -> np.ndarray:
-        """
-        Trim uniform (near‑white) borders even for fully opaque RGBA canvases.
-        tol = max channel distance from 255 to still count as border.
-        """
         rgb = arr[..., :3].astype(int)
         if arr.shape[2] == 4:
             alpha = arr[..., 3]
@@ -912,7 +1090,6 @@ def compose_icetemp_and_vertical_profiles(
             mask = (alpha > 0) & nonwhite
         else:
             mask = (np.abs(rgb - 255).max(axis=2) > tol)
-
         coords = np.argwhere(mask)
         if coords.size == 0:
             return arr
@@ -922,26 +1099,64 @@ def compose_icetemp_and_vertical_profiles(
 
     arr_left = _to_rgba(left)
     arr_right = _to_rgba(right)
+    arr_radargram = _to_rgba(radargram)
 
     if trim_borders:
         arr_left = _trim_rgba_border(arr_left, tol=trim_tolerance)
         arr_right = _trim_rgba_border(arr_right, tol=trim_tolerance)
+        if arr_radargram is not None:
+            arr_radargram = _trim_rgba_border(arr_radargram, tol=trim_tolerance)
 
-    # Compute widths from native aspect so both panels have same height without stretch
+    # Compute widths from native aspect
     if isinstance(width_ratios, str) and width_ratios.lower() == "auto":
         wl = max(1e-3, arr_left.shape[1] / arr_left.shape[0])
         wr = max(1e-3, arr_right.shape[1] / arr_right.shape[0])
         width_ratios = (wl, wr)
 
     fig = plt.figure(figsize=figsize, dpi=dpi)
-    gs = GridSpec(nrows=1, ncols=2, figure=fig, width_ratios=width_ratios, wspace=wspace)
+    
+    # Determine layout
+    if arr_radargram is not None:
+        # Calculate radargram aspect ratio (height/width)
+        radar_h, radar_w = arr_radargram.shape[:2]
+        radar_aspect = radar_h / radar_w
+        
+        # Combined width ratio = sum of width_ratios
+        combined_width_ratio = sum(width_ratios)
+        
+        # Height needed to preserve aspect when spanning that combined width
+        bottom_height_ratio = radar_aspect * combined_width_ratio * 0.8  # scale factor for visual balance
+        
+        height_ratios = (1.0, bottom_height_ratio)
+        
+        # Create outer grid with wspace=0 to avoid shifting
+        gs_outer = GridSpec(nrows=2, ncols=1, figure=fig,
+                            height_ratios=height_ratios,
+                            hspace=hspace,
+                            wspace=0)  # no horizontal space in outer grid
+        
+        # Top row: nested grid with wspace for panels A and B
+        gs_top = gs_outer[0].subgridspec(1, 2, width_ratios=width_ratios, wspace=wspace)
+        axA = fig.add_subplot(gs_top[0, 0])
+        axB = fig.add_subplot(gs_top[0, 1])
+        
+        # Bottom row: single axis spanning full width
+        # Use left=0, right=1 positioning to ignore any column structure
+        axC = fig.add_subplot(gs_outer[1, 0])
+    else:
+        gs = GridSpec(nrows=1, ncols=2, figure=fig,
+                      width_ratios=width_ratios,
+                      wspace=wspace)
+        axA = fig.add_subplot(gs[0, 0])
+        axB = fig.add_subplot(gs[0, 1])
+        axC = None
 
-    axA = fig.add_subplot(gs[0, 0])
-    axA.imshow(arr_left, aspect='equal')   # preserve proportions
+    # Panel A
+    axA.imshow(arr_left, aspect='equal')
     axA.set_axis_off()
 
-    axB = fig.add_subplot(gs[0, 1])
-    axB.imshow(arr_right, aspect='equal')  # preserve proportions
+    # Panel B
+    axB.imshow(arr_right, aspect='equal')
     axB.set_axis_off()
 
     # Labels
@@ -950,6 +1165,30 @@ def compose_icetemp_and_vertical_profiles(
     _add_corner_label(axA, labels[0], fontsize=label_fontsize, box=label_box)
     _add_corner_label(axB, labels[1], fontsize=label_fontsize, box=label_box)
 
+    result_axes = {"A": axA, "B": axB}
+
+    # Panel C (radargram) - preserve aspect ratio and force full width
+    if axC is not None:
+        # Manually set position to span exact combined width of A+B
+        # Get positions of A and B after layout
+        fig.canvas.draw()  # ensure layout is computed
+        bbox_a = axA.get_position()
+        bbox_b = axB.get_position()
+        
+        # Panel C should span from left edge of A to right edge of B
+        left_edge = bbox_a.x0
+        right_edge = bbox_b.x1
+        bottom_edge = gs_outer[1].get_position(fig).y0
+        top_edge = gs_outer[1].get_position(fig).y1
+        
+        # Set new position for axC
+        axC.set_position([left_edge, bottom_edge, right_edge - left_edge, top_edge - bottom_edge])
+        
+        axC.imshow(arr_radargram, aspect='equal')
+        axC.set_axis_off()
+        _add_corner_label(axC, labels[2], fontsize=label_fontsize, box=label_box)
+        result_axes["C"] = axC
+
     fig.subplots_adjust(left=0, right=1, top=1, bottom=0)
 
     if savefig_path:
@@ -957,7 +1196,7 @@ def compose_icetemp_and_vertical_profiles(
         savefig_path.parent.mkdir(parents=True, exist_ok=True)
         fig.savefig(savefig_path, dpi=dpi, bbox_inches="tight", pad_inches=0.01)
 
-    return fig, {"A": axA, "B": axB}
+    return fig, result_axes
 
 def format_axes_coords(ax, x_step=5000, y_step=5000, thousands="'", decimals=0):
     """
@@ -1074,17 +1313,23 @@ def draw_glacier_map(
     ax, ortho_path, bbox, gdf_pts, dem_tiles, boreholes, title,
     ANNO_FONTSIZE, ABBR_FONTSIZE,
     add_label_color=False, xlabel=True, ylabel=True, panel=None,
-    background="ortho",                       # "ortho" | "hillshade"
+    background="ortho",
     highlight_ids: Union[int, Sequence[int], None] = None,
     highlight_color: str = "crimson",
     highlight_size: float = 12.0,
     annotations: dict | None = None,
-    outlines: gpd.GeoDataFrame | str | None = None,   # NEW: GeoDataFrame or path to file (or DataFrame-like with 'geometry' column)
-    outline_color: str | None = None,                # optional override color for outline
+    outlines: gpd.GeoDataFrame | str | None = None,
+    outline_color: str | None = None,
     outline_linewidth: float = 2.0,
     outline_alpha: float = 0.85,
     tick_labelsize : int = 8,
-    show_borehole_labels: bool = True  # <-- NEW ARGUMENT
+    show_borehole_labels: bool = True,
+    show_bedrock_depth: bool = False,  # NEW ARGUMENT
+    gdf_pts_2: gpd.GeoDataFrame | None = None,
+    show_flow_arrow: bool = True,
+    flow_arrow_angle_deg: float | None = None,   # override computed direction (0=east, 90=north)
+    flow_arrow_pos_offset: tuple | None = None,  # (dx, dy) in map units to shift arrow start
+    flow_arrow_label: str = ""
 ):
     """
     Draw a single glacier map on `ax`.
@@ -1102,7 +1347,7 @@ def draw_glacier_map(
     Note: default outline color is black ('k') unless an explicit outline_color is provided.
     """
     if outline_color is None:
-        outline_color = 'k'
+        outline_color = 'darkblue'
     plt.rcParams['font.family'] = 'Arial'
 
     hs_kwargs = getattr(draw_glacier_map, "_hillshade_defaults", None) or {}
@@ -1138,7 +1383,7 @@ def draw_glacier_map(
             pass
 
         # Overlay hillshade on top with semi-transparency
-        hs_alpha = hs_kwargs.pop("alpha", 0.5)
+        hs_alpha = hs_kwargs.pop("alpha", 0.2)
         hs_img = imshow_hillshade(ax, dem_tiles, plot_extent=ortho_extent, merge_bbox=bbox)
         try:
             if hs_img is not None and hasattr(hs_img, "set_alpha"):
@@ -1161,11 +1406,14 @@ def draw_glacier_map(
     gprp.plot_dem_contours_from_tiles(
         ax, dem_tiles, bbox=bbox, pixel_size=2.0,
         minor_step=25.0, major_step=50.0,
-        minor_kwargs={'linewidths':0.25, 'colors':'k', 'alpha':0.9},
-        major_kwargs={'linewidths':0.6,  'colors':'k', 'alpha':1.0},
+        minor_kwargs={'linewidths':0.25, 'colors':'k', 'alpha':0.4},
+        major_kwargs={'linewidths':0.6,  'colors':'k', 'alpha':0.55},
         zorder_minor=6, zorder_major=7, label=True, label_fmt="%.0f m"
     )
     hide_edge_map_labels(ax, margin_frac=0.02)
+
+    # Will hold the reprojected/cleaned outline polygon GDF for flow-arrow DEM masking
+    _outline_gdf = None
 
     # Optional glacier outlines (draw before GPR points so points stay visible)
     if outlines is not None:
@@ -1210,6 +1458,12 @@ def draw_glacier_map(
             # Clean / fix invalid geometries and optionally simplify a little
             try:
                 gdf_outline['geometry'] = gdf_outline.geometry.apply(lambda g: (g.buffer(0) if (g is not None and not g.is_valid) else g))
+            except Exception:
+                pass
+
+            # Save reprojected+cleaned outline for flow-arrow DEM masking
+            try:
+                _outline_gdf = gdf_outline.copy()
             except Exception:
                 pass
 
@@ -1292,8 +1546,8 @@ def draw_glacier_map(
                                 continue
 
                 if segs:
-                    # create LineCollection; interiors (holes) can be dashed for clarity
-                    lc = LineCollection(segs, colors=outline_color_use, linewidths=outline_linewidth, alpha=outline_alpha, zorder=11, linestyles=':')
+                    # create LineCollection
+                    lc = LineCollection(segs, colors=outline_color_use, linewidths=outline_linewidth, alpha=outline_alpha, zorder=11, linestyles='-')
                     ax.add_collection(lc)
             except Exception:
                 # fallback: use GeoDataFrame plotting (last resort)
@@ -1308,6 +1562,10 @@ def draw_glacier_map(
 
     # Draw all GPR points (base layer) -- ensure fully opaque and on top of hillshade
     gprp.draw_gpr_line_points(ax, gdf_pts, size=3, color='k', alpha=1.0, zorder=8)
+
+    # Optionally draw second set of GPR points (e.g., different survey)
+    if gdf_pts_2 is not None:
+        gprp.draw_gpr_line_points(ax, gdf_pts_2, size=3, color='darkorange', alpha=1.0, zorder=8)
 
     # If highlight_ids provided, draw them on top explicitly (robust regardless of gprp implementation)
     if highlight_ids is not None:
@@ -1324,8 +1582,8 @@ def draw_glacier_map(
             ax.scatter(
                 sub.geometry.x, sub.geometry.y,
                 s=highlight_size, marker='o',
-                facecolor=highlight_color, edgecolor='black',
-                linewidths=0.8, zorder=10, alpha=1.0
+                facecolor=highlight_color, edgecolors='none',
+                zorder=9, alpha=1.0
             )
 
     # Annotation helper: replicate notebook-style PCA ordering and place label
@@ -1388,21 +1646,254 @@ def draw_glacier_map(
     # Boreholes + labels
     if (boreholes is not None) and (not boreholes.empty):
         for _, r in boreholes.iterrows():
+            # Determine base marker color
             if isinstance(r.get('name', ''), str) and r['name'].endswith('G'):
                 bh_color = 'red'
             elif isinstance(r.get('name', ''), str) and r['name'].endswith('TT'):
                 bh_color = 'white'
             else:
                 bh_color = 'white'
+            
+            # Check if this borehole reached bedrock
+            reached_bedrock = r.get('reached_bedrock', False)
+            
+            # Determine label position ONCE (before any conditional blocks that need it)
+            txt_va = 'top' if ((title == "Chessjen" and r.get('name') == "CJ1G") or 
+                               (title == "Hohsaas" and r.get('name') == "HS3G")) else 'bottom'
+            
+            # Draw standard borehole marker (no star overlay anymore)
             ax.scatter(r.geometry.x, r.geometry.y,
                        s=40, marker='o', color=bh_color, edgecolors='black',
                        linewidths=1, alpha=0.95, zorder=9, label='Boreholes')
+            
+            # Borehole name label (strip glacier abbreviation prefix, e.g. "AH1G" -> "1G")
             if show_borehole_labels:
-                txt_va = 'top' if ((title == "Chessjen" and r.get('name') == "CJ1G") or (title == "Hohsaas" and r.get('name') == "HS3G")) else 'bottom'
-                ax.text(r.geometry.x, r.geometry.y, r.get('name', ''),
+                bh_name = r.get('name', '')
+                glacier_abbr = abbr.get(title, title[:2].upper() if isinstance(title, str) and title else '')
+                if glacier_abbr and isinstance(bh_name, str) and bh_name.startswith(glacier_abbr):
+                    bh_label = bh_name[len(glacier_abbr):]
+                else:
+                    bh_label = bh_name
+                import matplotlib.transforms as _transforms
+                offset_y = -2 if txt_va == 'top' else 2
+                tr = _transforms.offset_copy(ax.transData, fig=ax.figure, x=2, y=offset_y, units='points')
+                ax.text(r.geometry.x, r.geometry.y, bh_label,
                         fontsize=ANNO_FONTSIZE-2, color='k', ha='left', va=txt_va,
-                        bbox=dict(boxstyle='round,pad=0.15', fc='white', ec='none', alpha=0.65),
-                        zorder=10)
+                        bbox=dict(boxstyle='round,pad=0.15', fc='white', ec='none', alpha=0.95),
+                        transform=tr, zorder=10)
+            
+            # Bedrock depth annotation (if enabled and reached bedrock)
+            if show_bedrock_depth and reached_bedrock:
+                depth = r.get('borehole depth (m)', None)
+                if depth is not None:
+                    # Convert to float if it's a string
+                    try:
+                        depth_val = float(depth)
+                    except (ValueError, TypeError):
+                        continue  # Skip if conversion fails
+                    
+                    # Format depth value
+                    depth_str = f"{depth_val:.1f} m"
+                    
+                    # Calculate annotation position (outside the main area)
+                    x0, y0, x1, y1 = bbox
+                    bh_x, bh_y = r.geometry.x, r.geometry.y
+                    
+                    # Determine optimal placement (away from center)
+                    center_x, center_y = (x0 + x1) / 2, (y0 + y1) / 2
+                    dx_from_center = bh_x - center_x
+                    dy_from_center = bh_y - center_y
+                    
+                    # Special handling for specific glaciers/boreholes to avoid overlap
+                    bh_name = r.get('name', '')
+                    
+                    # Default placement distance
+                    offset_dist = 80  # meters in map units
+                    
+                    # Glacier-specific positioning rules
+                    if title == "Chessjen":
+                        # For Chessjen, use diagonal positioning for both bedrock boreholes
+                        if bh_name == "CJ1G":
+                            # Place CJ1G at 45° angle (upper-right)
+                            angle = np.radians(45)
+                            anno_x = bh_x + offset_dist * np.cos(angle)
+                            anno_y = bh_y + offset_dist * np.sin(angle)
+                            ha = 'left'
+                            va = 'bottom'
+                        elif bh_name == "CJ2G":
+                            # Place CJ2G at 135° angle (upper-left) 
+                            angle = np.radians(135)
+                            anno_x = bh_x + offset_dist * np.cos(angle)
+                            anno_y = bh_y + offset_dist * np.sin(angle)
+                            ha = 'right'
+                            va = 'bottom'
+                        else:
+                            # Fallback for any other boreholes
+                            anno_x = bh_x + offset_dist
+                            anno_y = bh_y
+                            ha = 'left'
+                            va = 'center'
+                    else:
+                        # Default placement for other glaciers (perpendicular from center)
+                        if abs(dx_from_center) > abs(dy_from_center):
+                            # Place horizontally
+                            anno_x = bh_x + (offset_dist if dx_from_center > 0 else -offset_dist)
+                            anno_y = bh_y
+                            ha = 'left' if dx_from_center > 0 else 'right'
+                            va = 'center'
+                        else:
+                            # Place vertically
+                            anno_x = bh_x
+                            anno_y = bh_y + (offset_dist if dy_from_center > 0 else -offset_dist)
+                            ha = 'center'
+                            va = 'bottom' if dy_from_center > 0 else 'top'
+                    
+                    # Draw connecting line from borehole to annotation
+                    ax.plot([bh_x, anno_x], [bh_y, anno_y],
+                            color='k', linewidth=1.0, linestyle='-',
+                            zorder=10, alpha=0.8)
+                    
+                    # Place annotation text
+                    ax.text(anno_x, anno_y, depth_str,
+                            fontsize=ANNO_FONTSIZE-3, color='k',
+                            ha=ha, va=va,
+                            weight='bold',
+                            bbox=dict(boxstyle='round,pad=0.25', fc='white',
+                                    ec='k', lw=1.0, alpha=0.95),
+                            zorder=11)
+
+    # --- Flow direction arrow ------------------------------------------------
+    # Draws a small downslope arrow near the glacier terminus, derived from the
+    # DEM elevation gradient.  Disabled by passing show_flow_arrow=False.
+    if show_flow_arrow and dem_tiles:
+        try:
+            import rasterio as _rasterio
+            from rasterio.merge import merge as _rio_merge
+
+            _x0b, _y0b, _x1b, _y1b = bbox
+
+            # Load + merge DEM tiles clipped to the panel bbox
+            _srcs = [_rasterio.open(t) for t in dem_tiles]
+            try:
+                _mosaic, _dem_tf = _rio_merge(_srcs, bounds=(_x0b, _y0b, _x1b, _y1b))
+            finally:
+                for _s in _srcs:
+                    try:
+                        _s.close()
+                    except Exception:
+                        pass
+
+            _dem = _mosaic[0].astype(float)
+            _dem[_dem < -9000] = np.nan
+
+            # Mask DEM to glacier outline polygon(s) if available
+            if _outline_gdf is not None:
+                try:
+                    from rasterio.features import rasterize as _rasterize
+                    from shapely.geometry import mapping as _mapping
+                    _shapes = [
+                        (_mapping(g), 1) for g in _outline_gdf.geometry
+                        if g is not None and not g.is_empty
+                    ]
+                    if _shapes:
+                        _mask = _rasterize(
+                            _shapes, out_shape=_dem.shape,
+                            transform=_dem_tf, fill=0, dtype='uint8'
+                        )
+                        _dem[_mask == 0] = np.nan
+                except Exception:
+                    pass  # proceed with unmasked DEM
+
+            _valid = ~np.isnan(_dem)
+            if _valid.sum() >= 30:
+                # Fill NaN for gradient computation (gradient can't handle NaN natively)
+                _dem_fill = _dem.copy()
+                _dem_fill[~_valid] = np.nanmedian(_dem)
+
+                _gr, _gc = np.gradient(_dem_fill)
+                # Zero out gradient at invalid (outside-outline) pixels
+                _gr[~_valid] = np.nan
+                _gc[~_valid] = np.nan
+
+                _psx = abs(_dem_tf.a)   # metres per pixel (east direction)
+                _psy = abs(_dem_tf.e)   # metres per pixel (south direction)
+
+                # Flow = downslope = negative of gradient in map (east, north) coords
+                # - _gc / _psx  →  west if slope rises east
+                # +_gr / _psy  →  north if slope rises going south (increasing row)
+                _fe = -_gc / _psx
+                _fn = _gr / _psy
+
+                # Terminus region = lowest 25 % of valid elevations within glacier
+                _low_thresh = np.percentile(_dem[_valid], 25)
+                _term = _valid & (_dem <= _low_thresh)
+
+                if _term.sum() > 0:
+                    _rows_t, _cols_t = np.where(_term)
+                    _cr = int(np.mean(_rows_t))
+                    _cc = int(np.mean(_cols_t))
+
+                    # Convert pixel centroid to map coordinates
+                    _ax0 = _dem_tf.c + (_cc + 0.5) * _dem_tf.a
+                    _ay0 = _dem_tf.f + (_cr + 0.5) * _dem_tf.e
+
+                    # Mean flow direction at terminus
+                    _fe_m = float(np.nanmean(_fe[_term]))
+                    _fn_m = float(np.nanmean(_fn[_term]))
+                    _norm = np.hypot(_fe_m, _fn_m)
+
+                    # Allow manual angle override
+                    if flow_arrow_angle_deg is not None:
+                        _ang = np.radians(flow_arrow_angle_deg)
+                        _fe_m = np.cos(_ang)
+                        _fn_m = np.sin(_ang)
+                        _norm = 1.0
+
+                    if _norm > 0 and not np.isnan(_norm):
+                        _alen = (_x1b - _x0b) * 0.15   # arrow length = 15 % of panel width
+                        _dx = _fe_m / _norm * _alen
+                        _dy = _fn_m / _norm * _alen
+
+                        # Apply manual position offset if given
+                        if flow_arrow_pos_offset is not None:
+                            _ax0 += flow_arrow_pos_offset[0]
+                            _ay0 += flow_arrow_pos_offset[1]
+
+                        _ax1, _ay1 = _ax0 + _dx, _ay0 + _dy
+
+                        # Solid block arrow (thick body + wide triangular head)
+                        from matplotlib.patches import FancyArrow as _FancyArrow
+                        _body_w = _alen * 0.18
+                        _head_w = _alen * 0.42
+                        _head_l = _alen * 0.38
+                        _arrow_patch = _FancyArrow(
+                            _ax0, _ay0, _dx, _dy,
+                            width=_body_w, head_width=_head_w,
+                            head_length=_head_l, length_includes_head=True,
+                            color='red', zorder=25
+                        )
+                        ax.add_patch(_arrow_patch)
+
+                        # Label in-line with arrow: placed just past tip, rotated to match
+                        if flow_arrow_label:
+                            _angle_deg = float(np.degrees(np.arctan2(_fn_m, _fe_m)))
+                            # small gap between tip and text start (in map units)
+                            _gap = _alen * 0.05
+                            _lx = _ax1 + np.cos(np.radians(_angle_deg)) * _gap
+                            _ly = _ay1 + np.sin(np.radians(_angle_deg)) * _gap
+                            ax.text(
+                                _lx, _ly, flow_arrow_label,
+                                fontsize=ANNO_FONTSIZE, color='red',
+                                ha='left', va='center',
+                                fontweight='bold', fontfamily='Arial',
+                                rotation=_angle_deg, rotation_mode='anchor',
+                                zorder=26,
+                                bbox=dict(boxstyle='square,pad=0.1', fc='white',
+                                          ec='none', alpha=0.7)
+                            )
+        except Exception:
+            pass   # never let a failed arrow crash the figure
+    # -------------------------------------------------------------------------
 
     # Limits & formatting
     x0, y0, x1, y1 = bbox
@@ -1425,7 +1916,8 @@ def draw_glacier_map(
     default_abbr = abbr.get(title, (title.split()[0][:2].upper() if isinstance(title, str) and title else ""))
     label_abbr = default_abbr
     label_color = rect_colors.get(label_abbr, 'k') if add_label_color else 'k'
-    ax.text(0.02, 0.02, label_abbr, transform=ax.transAxes,
+    label_display = f"{title} ({label_abbr})" if title else label_abbr
+    ax.text(0.02, 0.02, label_display, transform=ax.transAxes,
             ha='left', va='bottom', fontsize=ABBR_FONTSIZE, fontweight='bold',
             color=label_color,
             bbox=dict(boxstyle='round,pad=0.15', fc='white', ec=label_color, alpha=0.7),

@@ -158,33 +158,86 @@ class ThermistorDataPlotter:
         self.format_plot(plot_title)
         plt.savefig(savepath)
 
-    def plot_multiple_temperature_profiles(self, snapshot_time, offsets_list, depth_files, figsize=(3.6, 4.2), dpi=250, xtick_rotation=0, labels=None,
-                                           savepath=None, title=None, ntc_data_list=None,
-                                           base_fontsize: int = 14, show_title: bool = False):
+    def plot_multiple_temperature_profiles(
+        self, 
+        snapshot_time=None,  # NOW OPTIONAL
+        offsets_list=None, 
+        depth_files=None, 
+        figsize=(3.6, 4.2), 
+        dpi=250, 
+        xtick_rotation=0, 
+        labels=None,
+        savepath=None, 
+        title=None, 
+        ntc_data_list=None,
+        base_fontsize: int = 14, 
+        show_title: bool = False, 
+        exclude_labels=None,
+        xtick_step: float | None = None,
+        use_full_period: bool = False,  # NEW: average over entire observation period
+        start_time=None,  # NEW: optional start time for full period (GeoPrecision + non-1TT/2TT NTC)
+        end_time=None,    # NEW: optional end time for full period (GeoPrecision + non-1TT/2TT NTC)
+    ):
         """
-        Plot temperature profiles for multiple GeoPrecision chains (daily mean at snapshot_time)
-        and optional TinyTag/NTC boreholes (single or averaged values). Colors are taken from
-        build_profile_color_map so they match other figures.
+        Plot temperature profiles for multiple GeoPrecision chains (daily mean at snapshot_time
+        OR averaged over entire observation period) and optional TinyTag/NTC boreholes.
+
+        **IMPORTANT**: NTC data ending in '1TT' or '2TT' (e.g., 'CJ1TT', 'SR2TT') are **always** 
+        averaged over their entire measurement period, regardless of start_time/end_time filters.
+        Other NTC labels (e.g., 'CJ3TT', 'CJ4TT') respect the time filters.
 
         Parameters
         ----------
-        snapshot_time : str | datetime-like
+        snapshot_time : str | datetime-like, optional
             Date of the daily mean (e.g., '20250916' or '16/09/2025').
+            Ignored if use_full_period=True.
         offsets_list : list
             Per-chain offset rows/Series (same order as self.file_paths).
         depth_files : list[str]
             CSV paths with sensor depths; if ntc_data_list is provided, append its depth files at the end.
         ntc_data_list : list[pd.DataFrame] | None
             Optional TinyTag data frames containing 'White Probe Temperature' and 'Black Probe Temperature'.
-            If multiple rows, their mean is used.
+            **Labels ending in '1TT' or '2TT' are ALWAYS averaged over their entire period.**
+            **Other labels (e.g., '3TT', '4TT') respect start_time/end_time filters.**
+        exclude_labels : list[str] | None
+            List of profile labels to exclude from the plot (e.g., ['AH1G', 'CJ2TT']).
+        xtick_step : float, optional
+            Step size for x-axis (temperature) ticks.
+        use_full_period : bool, default False
+            If True, average GeoPrecision chains over the entire observation period.
+            Each chain may have a different observation period.
+            Ignores snapshot_time parameter.
+        start_time : str, optional
+            Start time filter for full period averaging (format: 'DD.MM.YYYY' or 'YYYY-MM-DD').
+            **Applies to GeoPrecision chains and NTC labels NOT ending in '1TT' or '2TT'.**
+            Only used if use_full_period=True.
+        end_time : str, optional
+            End time filter for full period averaging.
+            **Applies to GeoPrecision chains and NTC labels NOT ending in '1TT' or '2TT'.**
+            Only used if use_full_period=True.
+        
+        Returns
+        -------
+        fig, ax
+            Matplotlib figure and axes objects
         """
-        # Normalize snapshot date
-        day = pd.to_datetime(snapshot_time, dayfirst=True, errors='coerce')
-        if pd.isna(day):
-            day = pd.to_datetime(str(snapshot_time), format="%Y%m%d", errors='coerce')
-        if pd.isna(day):
-            raise ValueError(f"Could not parse snapshot_time: {snapshot_time}")
-        day = day.normalize()
+        import pandas as pd
+        import numpy as np
+        import matplotlib.pyplot as plt
+
+        # Validation
+        if not use_full_period and snapshot_time is None:
+            raise ValueError("Must provide either snapshot_time or set use_full_period=True")
+        
+        # Parse snapshot date if provided
+        day = None
+        if not use_full_period:
+            day = pd.to_datetime(snapshot_time, dayfirst=True, errors='coerce')
+            if pd.isna(day):
+                day = pd.to_datetime(str(snapshot_time), format="%Y%m%d", errors='coerce')
+            if pd.isna(day):
+                raise ValueError(f"Could not parse snapshot_time: {snapshot_time}")
+            day = day.normalize()
 
         fig, ax = plt.subplots(figsize=figsize, dpi=dpi)
 
@@ -197,23 +250,34 @@ class ThermistorDataPlotter:
             labels = [f'Chain {i+1}' for i in range(n_profiles)]
             labels += [f'NTC {j+1}' for j in range(n_ntc)]
 
+        # Normalize exclude_labels to set for fast lookup
+        exclude_set = set(exclude_labels) if exclude_labels else set()
+
         # Colors
         color_map = build_profile_color_map(labels)
-        fallback_colors = _batlow_trunc(max(total_series, 1), start=0.0, end=0.8)
+        _ncols = max(total_series, 1)
+        _positions = np.linspace(0.05, 0.75, _ncols)
+        fallback_colors = [cmc.romaO(float(p)) for p in _positions]
 
         # Common excludes
         exclude_cols = {'NO', 'TIME', 'TEMP LOGGER', 'TEMP BATTERY', 'HK-BAT:V'}
 
         # 1) Plot GeoPrecision chains
         for i in range(n_profiles):
-            fp = self.file_paths[i]
-            offs = offsets_list[i] if i < len(offsets_list) else None
-            dfile = depth_files[i] if i < len(depth_files) else None
             label = labels[i] if i < len(labels) else f'Chain {i+1}'
+            
+            # Skip if in exclude list
+            if label in exclude_set:
+                continue
+                
+            fp = self.file_paths[i]
+            offs = offsets_list[i] if offsets_list and i < len(offsets_list) else None
+            dfile = depth_files[i] if depth_files and i < len(depth_files) else None
 
             if dfile is None:
                 print(f"Warning: missing depth file for chain index {i}; skipping.")
                 continue
+            
             try:
                 depths_dict = read_thermistor_depths(dfile)
             except Exception as e:
@@ -221,17 +285,36 @@ class ThermistorDataPlotter:
                 continue
 
             thermistor = ThermistorData(fp, self.delimiter, self.measurement_depth)
-            day_df = thermistor.get_chain_data_with_offsets(offsets=offs, snapshot_day=snapshot_time)
-            if day_df is None or day_df.empty:
+            
+            # Get data based on mode
+            # GeoPrecision chains respect start_time/end_time filters
+            if use_full_period:
+                # Average over entire observation period (may differ per chain)
+                df = thermistor.get_chain_data_with_offsets(
+                    start_time=start_time,
+                    end_time=end_time,
+                    offsets=offs,
+                    aggregate="mean"  # Returns single row with mean values
+                )
+            else:
+                # Daily average for snapshot day
+                df = thermistor.get_chain_data_with_offsets(
+                    offsets=offs, 
+                    snapshot_day=snapshot_time,
+                    return_daily_average=True
+                )
+            
+            if df is None or df.empty:
+                print(f"Warning: no data for {label}")
                 continue
 
             depths, temps = [], []
             for sensor, depth in depths_dict.items():
                 if depth is None:
                     continue
-                if sensor in day_df.columns and sensor not in exclude_cols:
-                    series = pd.to_numeric(day_df[sensor], errors='coerce')
-                    m = series.mean(skipna=True)
+                if sensor in df.columns and sensor not in exclude_cols:
+                    series = pd.to_numeric(df[sensor], errors='coerce')
+                    m = series.mean(skipna=True) if len(series) > 1 else float(series.iloc[0])
                     if np.isfinite(m):
                         depths.append(float(depth))
                         temps.append(float(m))
@@ -242,16 +325,24 @@ class ThermistorDataPlotter:
                 ax.plot(temps, depths, 'o-', label=label, color=color, linewidth=2.5)
 
         # 2) Plot TinyTag/NTC points or short profiles
+        # FIXED: Only *1TT and *2TT use entire period (no time filters)
+        # Other NTC labels (e.g., *3TT, *4TT) respect time filters
         if n_ntc > 0:
-            ntc_depth_files = depth_files[n_profiles:n_profiles + n_ntc]
+            ntc_depth_files = depth_files[n_profiles:n_profiles + n_ntc] if depth_files else []
             for j in range(n_ntc):
                 color_idx = n_profiles + j
+                label = labels[n_profiles + j] if (n_profiles + j) < len(labels) else f'NTC {j+1}'
+                
+                # Skip if in exclude list
+                if label in exclude_set:
+                    continue
+                    
                 ntc_df = ntc_data_list[j]
                 dfile = ntc_depth_files[j] if j < len(ntc_depth_files) else None
-                label = labels[n_profiles + j] if (n_profiles + j) < len(labels) else f'NTC {j+1}'
 
                 if dfile is None or ntc_df is None or ntc_df.empty:
                     continue
+                
                 try:
                     depths_dict = read_thermistor_depths(dfile)
                 except Exception as e:
@@ -263,19 +354,74 @@ class ThermistorDataPlotter:
                 depth_white = dd_lower.get('white probe', dd_lower.get('white', None))
                 depth_black = dd_lower.get('black probe', dd_lower.get('black', None))
 
-                # Temperatures (mean if multiple rows)
+                # FIXED: Check if label ends with '1TT' or '2TT' (case-insensitive)
+                label_upper = label.upper()
+                use_full_ntc_period = label_upper.endswith('1TT') or label_upper.endswith('2TT')
+                
+                # Temperatures - conditional time filtering
                 try:
-                    t_white = pd.to_numeric(ntc_df['White Probe Temperature'], errors='coerce').mean()
-                    t_black = pd.to_numeric(ntc_df['Black Probe Temperature'], errors='coerce').mean()
+                    if use_full_ntc_period:
+                        # Average over ALL rows (entire measurement period)
+                        t_white = pd.to_numeric(ntc_df['White Probe Temperature'], errors='coerce').mean()
+                        t_black = pd.to_numeric(ntc_df['Black Probe Temperature'], errors='coerce').mean()
+                        
+                        # Log for verification
+                        n_samples = len(ntc_df)
+                        time_span = "full period"
+                        if 'TIME' in ntc_df.columns:
+                            times = pd.to_datetime(ntc_df['TIME'], errors='coerce')
+                            if times.notna().any():
+                                t_start = times.min()
+                                t_end = times.max()
+                                time_span = f"{t_start.date()} to {t_end.date()}"
+                        print(f"NTC {label} (1TT/2TT): averaging {n_samples} samples over {time_span}")
+                        print(f"  White probe: {t_white:.3f}°C, Black probe: {t_black:.3f}°C")
+                    else:
+                        # Filter by start_time/end_time if provided (for *3TT, *4TT, etc.)
+                        ntc_filtered = ntc_df.copy()
+                        if 'TIME' in ntc_filtered.columns:
+                            ntc_filtered['TIME'] = pd.to_datetime(ntc_filtered['TIME'], errors='coerce')
+                            
+                            if start_time is not None:
+                                st = pd.to_datetime(start_time, dayfirst=True, errors='coerce')
+                                if pd.notna(st):
+                                    ntc_filtered = ntc_filtered[ntc_filtered['TIME'] >= st]
+                            
+                            if end_time is not None:
+                                et = pd.to_datetime(end_time, dayfirst=True, errors='coerce')
+                                if pd.notna(et):
+                                    ntc_filtered = ntc_filtered[ntc_filtered['TIME'] <= et]
+                        
+                        if ntc_filtered.empty:
+                            print(f"Warning: no data for {label} after time filtering")
+                            continue
+                        
+                        t_white = pd.to_numeric(ntc_filtered['White Probe Temperature'], errors='coerce').mean()
+                        t_black = pd.to_numeric(ntc_filtered['Black Probe Temperature'], errors='coerce').mean()
+                        
+                        # Log for verification
+                        n_samples = len(ntc_filtered)
+                        time_span = "filtered period"
+                        if 'TIME' in ntc_filtered.columns:
+                            times = ntc_filtered['TIME']
+                            if times.notna().any():
+                                t_start = times.min()
+                                t_end = times.max()
+                                time_span = f"{t_start.date()} to {t_end.date()}"
+                        print(f"NTC {label} (other): averaging {n_samples} samples over {time_span}")
+                        print(f"  White probe: {t_white:.3f}°C, Black probe: {t_black:.3f}°C")
+                        
                 except Exception as e:
                     print(f"Warning: missing NTC temperature columns for {label}: {e}")
                     continue
 
                 temps_ntc, depths_ntc = [], []
                 if depth_white is not None and np.isfinite(t_white):
-                    temps_ntc.append(float(t_white)); depths_ntc.append(float(depth_white))
+                    temps_ntc.append(float(t_white))
+                    depths_ntc.append(float(depth_white))
                 if depth_black is not None and np.isfinite(t_black):
-                    temps_ntc.append(float(t_black)); depths_ntc.append(float(depth_black))
+                    temps_ntc.append(float(t_black))
+                    depths_ntc.append(float(depth_black))
 
                 if len(temps_ntc) >= 1:
                     if len(temps_ntc) > 1:
@@ -289,15 +435,30 @@ class ThermistorDataPlotter:
         ax.set_ylabel('Depth [m]')
         ax.axvline(x=0, color='k', linestyle='--')
 
-        # Title/legend via formatter (legend drawn below with sharp frame)
+        # Apply custom x-tick step if provided
+        if xtick_step is not None:
+            try:
+                step = float(xtick_step)
+                if step > 0:
+                    xmin, xmax = ax.get_xlim()
+                    x_neg = np.arange(0, xmin - step * 0.5, -step)[::-1]
+                    x_pos = np.arange(0, xmax + step * 0.5, step)
+                    xticks = np.unique(np.concatenate([x_neg, x_pos]))
+                    xticks.sort()
+                    ax.set_xticks(xticks)
+            except (TypeError, ValueError) as e:
+                print(f"Warning: invalid xtick_step ({xtick_step}), using automatic ticks: {e}")
+
+        # Title/legend
         self.format_plot(None, xtick_rotation=xtick_rotation, legend_loc='best', show_legend=False, base_fontsize=base_fontsize)
         if show_title and title:
             ax.set_title(title, fontsize=max(10, int(base_fontsize)))
 
-        # Sharp-corner legend
-        if labels and len(labels) > 0:
-            ax.legend(frameon=True, fancybox=False, edgecolor='black', framealpha=1, facecolor='white',
-                      loc='best', fontsize=max(8, int(base_fontsize)))
+        # Legend
+        handles, legend_labels = ax.get_legend_handles_labels()
+        if handles and legend_labels:
+            ax.legend(handles, legend_labels, frameon=True, fancybox=False, edgecolor='black', 
+                    framealpha=1, facecolor='white', loc='best', fontsize=max(8, int(base_fontsize)))
 
         if savepath:
             fig.savefig(savepath, dpi=300, bbox_inches="tight")
@@ -796,6 +957,331 @@ class ThermistorDataPlotter:
 
         # Return offsets and stable indices
         return (black_probe_offset, stable_indices_black, white_probe_offset, stable_indices_white)
+    
+    def plot_ntc_statistics(
+        self,
+        savepath=None,
+        depths=None,
+        borehole_labels=None,
+        title=None,
+        calibrate=False,
+        zero_deg_offsets=None,
+        figsize=(12, 8),
+        dpi=300,
+        base_fontsize=14,
+        show_boxplot=True,
+        show_table=True,
+        seasonal_months=None,  # e.g., [(6,7,8), (12,1,2)] for summer/winter
+        equilibration_days=4  # <-- NEW: exclude first N days
+    ):
+        """
+        Create statistical summary of NTC temperature data with table and boxplot.
+        
+        Parameters
+        ----------
+        savepath : str, optional
+            Path to save the figure
+        depths : list
+            Sensor depths [BH1_white, BH1_black] or [BH1_white, BH1_black, BH2_white, BH2_black]
+        borehole_labels : list[str]
+            Labels like ['SR1TT', 'SR2TT']
+        title : str, optional
+            Plot title
+        calibrate : bool
+            Apply calibration offsets
+        zero_deg_offsets : list, optional
+            Calibration offsets [(black_off, white_off), ...]
+        figsize : tuple
+            Figure size
+        dpi : int
+            Figure DPI
+        base_fontsize : int
+            Base font size
+        show_boxplot : bool
+            Show boxplot of temperature distributions
+        show_table : bool
+            Show statistical summary table
+        seasonal_months : list[tuple], optional
+            List of month tuples for seasonal analysis, e.g., [(6,7,8), (12,1,2)]
+            for summer (JJA) and winter (DJF)
+        equilibration_days : int
+            Number of days to skip at start (default 4)
+        
+        Returns
+        -------
+        fig, stats_df
+            Figure and DataFrame with statistics
+        """
+        import pandas as pd
+        import numpy as np
+        import matplotlib.pyplot as plt
+        from matplotlib.patches import Rectangle
+        
+        # Setup
+        if depths is None or len(depths) not in (2, 4):
+            raise ValueError("depths must be 2 or 4 values")
+        depths = [float(d) for d in depths]
+        
+        if not borehole_labels or len(borehole_labels) < 1:
+            raise ValueError("borehole_labels required")
+        
+        # Colors
+        cmap_dict = build_profile_color_map(borehole_labels)
+        colors = [cmap_dict[lab] for lab in borehole_labels]
+        
+        # Load data
+        fps = getattr(self, "file_paths", [getattr(self, "file_path", None)])
+        delim = getattr(self, "delimiter", ",")
+        meas = getattr(self, "measurement_depth", None)
+        
+        ntc_data1 = pd.DataFrame()
+        ntc_data2 = pd.DataFrame()
+        if fps and fps[0]:
+            t1 = ThermistorData(fps[0], delim, meas)
+            ntc_data1 = t1.get_ntc_data()
+        if len(fps) > 1 and fps[1] and len(depths) == 4:
+            t2 = ThermistorData(fps[1], delim, meas)
+            ntc_data2 = t2.get_ntc_data()
+        
+        # Apply calibration
+        if calibrate and zero_deg_offsets:
+            try:
+                if not ntc_data1.empty and len(zero_deg_offsets) >= 1:
+                    b_off, w_off = zero_deg_offsets[0]
+                    ntc_data1['Black Probe Temperature'] = pd.to_numeric(
+                        ntc_data1['Black Probe Temperature'], errors='coerce') - float(b_off)
+                    ntc_data1['White Probe Temperature'] = pd.to_numeric(
+                        ntc_data1['White Probe Temperature'], errors='coerce') - float(w_off)
+                if not ntc_data2.empty and len(zero_deg_offsets) >= 2:
+                    b_off, w_off = zero_deg_offsets[1]
+                    ntc_data2['Black Probe Temperature'] = pd.to_numeric(
+                        ntc_data2['Black Probe Temperature'], errors='coerce') - float(b_off)
+                    ntc_data2['White Probe Temperature'] = pd.to_numeric(
+                        ntc_data2['White Probe Temperature'], errors='coerce') - float(w_off)
+            except Exception as e:
+                print(f"Warning: calibration failed ({e})")
+        
+        # Process timestamps and skip equilibration period
+        for df in (ntc_data1, ntc_data2):
+            if not df.empty:
+                df["TIME"] = pd.to_datetime(df["TIME"])
+                df.sort_values("TIME", inplace=True)
+                # Skip first N days
+                if equilibration_days > 0:
+                    cutoff = df["TIME"].min() + pd.Timedelta(days=equilibration_days)
+                    df.drop(df[df["TIME"] < cutoff].index, inplace=True)
+        
+        def compute_statistics(df, label, depth_white, depth_black):
+            """Compute comprehensive statistics for a borehole"""
+            if df.empty:
+                return None
+            
+            stats_list = []
+            
+            for probe, col, depth in [
+                ('White', 'White Probe Temperature', depth_white),
+                ('Black', 'Black Probe Temperature', depth_black)
+            ]:
+                temps = pd.to_numeric(df[col], errors='coerce').dropna()
+                if temps.empty:
+                    continue
+                
+                # Add month for seasonal analysis
+                df_temp = df[[col, 'TIME']].copy()
+                df_temp[col] = pd.to_numeric(df_temp[col], errors='coerce')
+                df_temp['month'] = df_temp['TIME'].dt.month
+                
+                stats = {
+                    'Borehole': label,
+                    'Sensor': f"{probe} ({depth:.1f} m)",
+                    'Mean [°C]': temps.mean(),
+                    'Median [°C]': temps.median(),
+                    'Std Dev [°C]': temps.std(),
+                    'Min [°C]': temps.min(),
+                    'Max [°C]': temps.max(),
+                    'Range [°C]': temps.max() - temps.min(),
+                    'Q25 [°C]': temps.quantile(0.25),
+                    'Q75 [°C]': temps.quantile(0.75),
+                    'IQR [°C]': temps.quantile(0.75) - temps.quantile(0.25),
+                    'N samples': len(temps)
+                }
+                
+                # Seasonal amplitude if requested
+                if seasonal_months:
+                    for i, months in enumerate(seasonal_months, 1):
+                        mask = df_temp['month'].isin(months)
+                        seasonal_temps = df_temp.loc[mask, col].dropna()
+                        if not seasonal_temps.empty:
+                            stats[f'Season{i} Mean [°C]'] = seasonal_temps.mean()
+                            stats[f'Season{i} Std [°C]'] = seasonal_temps.std()
+                    
+                    # Annual amplitude (if we have 2 seasons)
+                    if len(seasonal_months) == 2:
+                        s1_key = f'Season1 Mean [°C]'
+                        s2_key = f'Season2 Mean [°C]'
+                        if s1_key in stats and s2_key in stats:
+                            stats['Annual Amplitude [°C]'] = abs(stats[s1_key] - stats[s2_key])
+                
+                stats_list.append(stats)
+            
+            return pd.DataFrame(stats_list) if stats_list else None
+        
+        # Collect statistics
+        all_stats = []
+        
+        if not ntc_data1.empty:
+            stats1 = compute_statistics(ntc_data1, borehole_labels[0], depths[0], depths[1])
+            if stats1 is not None:
+                all_stats.append(stats1)
+        
+        if not ntc_data2.empty and len(depths) == 4:
+            stats2 = compute_statistics(ntc_data2, borehole_labels[1], depths[2], depths[3])
+            if stats2 is not None:
+                all_stats.append(stats2)
+        
+        if not all_stats:
+            raise ValueError("No valid statistics computed")
+        
+        stats_df = pd.concat(all_stats, ignore_index=True)
+        
+        # Create figure
+        n_panels = sum([show_table, show_boxplot])
+        if n_panels == 0:
+            raise ValueError("Must show at least table or boxplot")
+        
+        fig = plt.figure(figsize=figsize, dpi=dpi)
+        
+        if show_table and show_boxplot:
+            gs = fig.add_gridspec(2, 1, height_ratios=[1, 1.5], hspace=0.3)
+            ax_table = fig.add_subplot(gs[0])
+            ax_box = fig.add_subplot(gs[1])
+        elif show_table:
+            ax_table = fig.add_subplot(111)
+            ax_box = None
+        else:
+            ax_table = None
+            ax_box = fig.add_subplot(111)
+        
+        # Table
+        if show_table and ax_table:
+            ax_table.axis('off')
+            
+            # Format columns for display
+            display_cols = ['Borehole', 'Sensor', 'Mean [°C]', 'Std Dev [°C]', 
+                        'Min [°C]', 'Max [°C]', 'Range [°C]', 'N samples']
+            
+            # Add seasonal columns if present
+            season_cols = [c for c in stats_df.columns if 'Season' in c or 'Amplitude' in c]
+            display_cols.extend(season_cols)
+            
+            table_data = stats_df[display_cols].copy()
+            
+            # Round numeric columns
+            for col in table_data.columns:
+                if '[°C]' in col or 'N samples' in col:
+                    if 'N samples' in col:
+                        table_data[col] = table_data[col].astype(int)
+                    else:
+                        table_data[col] = table_data[col].round(3)
+            
+            # Create table
+            cell_text = table_data.values.tolist()
+            col_labels = [col.replace(' [°C]', '\n[°C]') for col in display_cols]
+            
+            table = ax_table.table(
+                cellText=cell_text,
+                colLabels=col_labels,
+                cellLoc='center',
+                loc='center',
+                bbox=[0, 0, 1, 1]
+            )
+            
+            table.auto_set_font_size(False)
+            table.set_fontsize(base_fontsize * 0.7)
+            table.scale(1, 2)
+            
+            # Style header
+            for i in range(len(col_labels)):
+                cell = table[(0, i)]
+                cell.set_facecolor('#4472C4')
+                cell.set_text_props(weight='bold', color='white')
+            
+            # Alternating row colors
+            for i in range(1, len(cell_text) + 1):
+                for j in range(len(col_labels)):
+                    cell = table[(i, j)]
+                    if i % 2 == 0:
+                        cell.set_facecolor('#E7E6E6')
+                    else:
+                        cell.set_facecolor('white')
+            
+            ax_table.set_title(title or 'Temperature Statistics', 
+                            fontsize=base_fontsize * 1.2, weight='bold', pad=20)
+        
+        # Boxplot
+        if show_boxplot and ax_box:
+            box_data = []
+            box_labels = []
+            box_colors = []
+            
+            if not ntc_data1.empty:
+                # FIXED: removed unpacking, use column name directly
+                for probe_col, label_suffix, depth_val in [
+                    ('White Probe Temperature', f"{borehole_labels[0]}\nWhite ({depths[0]:.1f}m)", depths[0]),
+                    ('Black Probe Temperature', f"{borehole_labels[0]}\nBlack ({depths[1]:.1f}m)", depths[1])
+                ]:
+                    temps = pd.to_numeric(ntc_data1[probe_col], errors='coerce').dropna()
+                    if not temps.empty:
+                        box_data.append(temps.values)
+                        box_labels.append(label_suffix)
+                        box_colors.append(colors[0])
+            
+            if not ntc_data2.empty and len(depths) == 4:
+                # FIXED: same pattern for BH2
+                for probe_col, label_suffix, depth_val in [
+                    ('White Probe Temperature', f"{borehole_labels[1]}\nWhite ({depths[2]:.1f}m)", depths[2]),
+                    ('Black Probe Temperature', f"{borehole_labels[1]}\nBlack ({depths[3]:.1f}m)", depths[3])
+                ]:
+                    temps = pd.to_numeric(ntc_data2[probe_col], errors='coerce').dropna()
+                    if not temps.empty:
+                        box_data.append(temps.values)
+                        box_labels.append(label_suffix)
+                        box_colors.append(colors[1] if len(colors) > 1 else colors[0])
+            
+            bp = ax_box.boxplot(box_data, labels=box_labels, patch_artist=True,
+                            notch=True, showmeans=True,
+                            meanprops=dict(marker='D', markerfacecolor='red', 
+                                            markeredgecolor='darkred', markersize=6))
+            
+            # Color boxes
+            for patch, color in zip(bp['boxes'], box_colors):
+                patch.set_facecolor(color)
+                patch.set_alpha(0.6)
+            
+            ax_box.set_ylabel('Temperature [°C]', fontsize=base_fontsize)
+            ax_box.axhline(0, color='k', linestyle='--', linewidth=1.5, alpha=0.7)
+            ax_box.grid(True, alpha=0.3, axis='y')
+            ax_box.tick_params(labelsize=base_fontsize * 0.9)
+            
+            if not show_table:
+                ax_box.set_title(title or 'Temperature Distribution', 
+                            fontsize=base_fontsize * 1.2, weight='bold')
+        
+        fig.tight_layout()
+        
+        # Save
+        if savepath:
+            from pathlib import Path
+            out_path = Path(savepath)
+            out_path.parent.mkdir(parents=True, exist_ok=True)
+            fig.savefig(out_path, dpi=dpi, bbox_inches="tight")
+            
+            # Also save CSV
+            csv_path = out_path.with_suffix('.csv')
+            stats_df.to_csv(csv_path, index=False)
+            print(f"Statistics saved to: {csv_path}")
+        
+        return fig, stats_df
 
 # -----------------------------------------------------------------------------
 # Heatmap: depth vs time (uses gpr_plotting.format_plot for consistent styling)
@@ -812,18 +1298,37 @@ def plot_chain_temperature_heatmap(
     smooth_time_sigma=0.0,
     smooth_depth_sigma=0.0,
     temp_step=0.5,
+    cbar_min=None,          # override colorbar minimum
     vmax=0.0,
-    figsize=(11, 5),
+    figsize=(6, 4),
     dpi=300,
     cmap=None,
     show_colorbar=True,
     title=None,
-    savepath=None
+    savepath=None,
+    add_contours: bool = True,
+    contour_kwargs: dict | None = None,
+    show_sensor_depths: bool = False,
+    sensor_depth_markers_kwargs: dict | None = None,
+    bedrock_depth: float | None = None,            # NEW: bedrock depth (m)
+    bedrock_hatch_kwargs: dict | None = None       # NEW: hatch style below deepest sensor
 ):
+    def _discrete_icetemp_cmap_from_levels(levels):
+        n_int = len(levels) - 1
+        if n_int <= 0:
+            colors = np.array(cmc.vik(1.0)).reshape(1, -1)
+        else:
+            if n_int > 1:
+                blue = cmc.vik(np.linspace(0.0, 0.5, n_int - 1))
+                red = np.array(cmc.vik(0.95)).reshape(1, -1)
+                colors = np.vstack([blue, red])
+            else:
+                colors = np.array(cmc.vik(1.0)).reshape(1, -1)
+        return ListedColormap(colors, name='icetemp_discrete')
+
     if depth_file is None:
         raise ValueError("depth_file is required to determine sensor depths.")
 
-    # Data with offsets
     df = thermistor.get_chain_data_with_offsets(
         start_time=start_time,
         end_time=end_time,
@@ -832,7 +1337,6 @@ def plot_chain_temperature_heatmap(
     if df.empty:
         raise ValueError("No data returned for specified time range.")
 
-    # Depth mapping
     depths_dict = read_thermistor_depths(depth_file)
     exclude = {'NO', 'TIME', 'TEMP LOGGER', 'TEMP BATTERY', 'HK-BAT:V'}
     sensor_cols = [c for c in df.columns if c not in exclude and c in depths_dict and depths_dict[c] is not None]
@@ -842,14 +1346,12 @@ def plot_chain_temperature_heatmap(
     sensor_cols = sorted(sensor_cols, key=lambda c: sensor_depths[c])
     depths_sorted = np.array([sensor_depths[c] for c in sensor_cols], float)
 
-    # Time index and temporal interpolation
     df = df[['TIME'] + sensor_cols].copy()
     df['TIME'] = pd.to_datetime(df['TIME'])
     df = df.sort_values('TIME').drop_duplicates('TIME').set_index('TIME')
     df_res = df.resample(time_freq).mean().interpolate(method='time', limit_direction='both')
     temp_matrix = df_res.to_numpy(float)
 
-    # Vertical grid and interpolation
     z_min, z_max = depths_sorted.min(), depths_sorted.max()
     depth_grid = np.arange(z_min, z_max + depth_step * 0.51, depth_step)
     nt, ns = temp_matrix.shape
@@ -861,11 +1363,9 @@ def plot_chain_temperature_heatmap(
         if m.sum() >= 2:
             grid[i, :] = np.interp(depth_grid, depths_sorted[m], row[m])
 
-    # Optional 2D smoothing
     if (smooth_time_sigma and smooth_time_sigma > 0) or (smooth_depth_sigma and smooth_depth_sigma > 0):
         valid = np.isfinite(grid)
         filled = grid.copy()
-        # nearest 1D fills along axes
         for j in range(nz):
             col = filled[:, j]
             nmask = ~np.isfinite(col)
@@ -881,27 +1381,25 @@ def plot_chain_temperature_heatmap(
         grid = gaussian_filter(filled, sigma=(smooth_time_sigma, smooth_depth_sigma), mode='nearest')
         grid[~valid] = np.nan
 
-    # Color levels and colormap (match icetemp profile style)
-    data_vals = grid[np.isfinite(grid)]
-    if data_vals.size == 0:
+    # beta_cc = 7.42e-4  # °C m^-1, pure ice/pure water (Cuffey & Paterson 2010, Eq. 9.9)
+    beta_cc = 8.7e-4      # °C m^-1, air-saturated ice (Cuffey & Paterson 2010, Eq. 9.10)
+    delta_cts = 0.05
+    Tm_depth = -beta_cc * depth_grid[None, :]
+    delta_grid = grid - Tm_depth
+
+    delta_vals = delta_grid[np.isfinite(delta_grid)]
+    if delta_vals.size == 0:
         raise ValueError("All interpolated values are NaN.")
-    vmin = np.floor(data_vals.min() / temp_step) * temp_step
-    vmax = 0.0 if vmax < 0 else vmax
-    levels = np.arange(vmin, vmax + temp_step * 0.99, temp_step)
+    vmin_dt = float(cbar_min) if cbar_min is not None else np.floor(delta_vals.min() / temp_step) * temp_step
+
+    neg_levels = np.arange(vmin_dt, -delta_cts, temp_step)
+    levels = np.unique(np.r_[neg_levels, -delta_cts, delta_cts])
+    levels.sort()
 
     if cmap is None:
-        base = cmc.lapaz
-        n_bins = len(levels) - 1
-        if n_bins <= 2:
-            colors = base(np.linspace(0.3, 0.85, n_bins))
-        else:
-            cold = base(np.linspace(0.10, 0.55, max(1, n_bins - 1)))
-            warm = base(np.linspace(0.90, 0.98, 1))
-            colors = np.vstack([cold, warm])
-        cmap = ListedColormap(colors, name="icetemp_chain")
+        cmap = _discrete_icetemp_cmap_from_levels(levels)
     norm = BoundaryNorm(levels, cmap.N, clip=True)
 
-    # Plot
     fig, ax = plt.subplots(figsize=figsize, dpi=dpi)
     times = df_res.index.to_pydatetime()
     if len(times) < 2:
@@ -911,28 +1409,106 @@ def plot_chain_temperature_heatmap(
     t_edges = np.r_[t_num[0] - dt[0] / 2, t_num[:-1] + dt / 2, t_num[-1] + dt[-1] / 2]
     z_edges = np.r_[depth_grid[0] - depth_step / 2, depth_grid[:-1] + depth_step / 2, depth_grid[-1] + depth_step / 2]
 
-    pcm = ax.pcolormesh(t_edges, z_edges, grid.T, cmap=cmap, norm=norm, shading='auto')
+    pcm = ax.pcolormesh(t_edges, z_edges, delta_grid.T, cmap=cmap, norm=norm, shading='auto')
     ax.invert_yaxis()
     ax.set_ylabel("Depth [m]")
     ax.set_xlabel("Time")
-    ax.xaxis.set_major_formatter(DateFormatter('%Y-%m'))
-    fig.autofmt_xdate()
 
-    # Optional contours
-    try:
-        ax.contour(mdates.date2num(times), depth_grid, grid.T, levels=levels, colors='k', linewidths=0.3, alpha=0.35)
-    except Exception:
-        pass
+    span = times[-1] - times[0]
+    span_days = span.total_seconds() / 86400.0
+    target_ticks = 8
+    if span_days <= 2.0:
+        span_hours = span.total_seconds() / 3600.0
+        step = max(1, round(span_hours / target_ticks))
+        loc = mdates.HourLocator(interval=step)
+        fmt = mdates.DateFormatter('%b %d\n%H:%M')
+    elif span_days <= 14.0:
+        span_hours = span.total_seconds() / 3600.0
+        step = max(3, round(span_hours / target_ticks))
+        loc = mdates.HourLocator(interval=step)
+        fmt = mdates.DateFormatter('%b %d\n%H:%M')
+    else:
+        step = max(1, round(span_days / target_ticks))
+        loc = mdates.DayLocator(interval=step)
+        fmt = mdates.DateFormatter('%b %d')
+    ax.xaxis.set_major_locator(loc)
+    ax.xaxis.set_major_formatter(fmt)
+    fig.autofmt_xdate(rotation=45)
 
-    # Colorbar
+    if add_contours:
+        ck = {"colors": "k", "linewidths": 0.6, "alpha": 0.35}
+        if contour_kwargs:
+            ck.update(contour_kwargs)
+        try:
+            ax.contour(t_num, depth_grid, delta_grid.T, levels=levels, **ck)
+        except Exception:
+            pass
+
+    # Bedrock line, hatched unknown zone, and dark-gray bedrock band
+    if bedrock_depth is not None:
+        try:
+            bedrock_color = "0.35"
+            z_min = float(depth_grid.min())
+            z_max = float(depth_grid.max())
+            z_range = max(z_max - z_min, depth_step)
+            rock_height = 0.10 * z_range  # 20% of plotted depth range
+            rock_bottom = float(bedrock_depth) + rock_height
+
+            # Draw bedrock line
+            ax.axhline(bedrock_depth, color="0.25", linewidth=2.2, linestyle="-", zorder=6)
+
+            # Hatched zone (unknown data) between deepest sensor and bedrock
+            if float(bedrock_depth) > z_max:
+                hk = {
+                    "facecolor": "none",
+                    "edgecolor": "0.25",
+                    "linewidth": 0.8,
+                    "hatch": "///",
+                    "alpha": 0.7,
+                    "zorder": 5
+                }
+                if bedrock_hatch_kwargs:
+                    hk.update(bedrock_hatch_kwargs)
+                ax.fill_between(t_edges, z_max, bedrock_depth, **hk)
+
+            # Dark-gray bedrock band below the bedrock line
+            ax.fill_between(
+                t_edges,
+                bedrock_depth,
+                rock_bottom,
+                facecolor=bedrock_color,
+                edgecolor=bedrock_color,
+                linewidth=0.0,
+                alpha=1.0,
+                zorder=4,
+            )
+
+            # Extend y-limits to show the bedrock band (respect inverted axis)
+            ax.set_ylim(rock_bottom, ax.get_ylim()[1])
+        except Exception:
+            pass
+
+    # Optional sensor-depth markers (no raw values)
+    if show_sensor_depths and depth_file is not None:
+        mk = dict(marker="|", s=60, color="k", alpha=0.9, linewidths=1.0, zorder=8)
+        if sensor_depth_markers_kwargs:
+            mk.update(sensor_depth_markers_kwargs)
+        if "markersize" in mk:  # map markersize -> s
+            ms = mk.pop("markersize")
+            mk["s"] = ms * ms
+        x0, x1 = ax.get_xlim()
+        x_pos = x1 + 0.012 * (x1 - x0)
+        ax.scatter(np.full_like(depths_sorted, x_pos, dtype=float), depths_sorted, **mk)
+
     cb = None
     if show_colorbar:
         cb = fig.colorbar(pcm, ax=ax, pad=0.02)
-        cb.set_label("Ice Temperature [°C]")
-        cb.set_ticks(levels)
-        cb.ax.set_yticklabels([f"{lv:.1f}" for lv in levels])
+        cb.set_label(r"ΔT = T - T$_m$(h) [°C]")
+        cold_ticks = [lv for lv in levels if lv < -delta_cts]
+        temp_tick = 0.0
+        cb.set_ticks(cold_ticks + [temp_tick])
+        cb.set_ticklabels([f"{t:.1f}" for t in cold_ticks] + [r"≈T$_{pmp}$"])
 
-    # Use shared formatter
     try:
         from processing.gpr_plotting import format_plot
     except Exception:
@@ -940,14 +1516,21 @@ def plot_chain_temperature_heatmap(
             from .gpr_plotting import format_plot
         except Exception:
             format_plot = None
+
     if format_plot:
         format_plot(ax=ax, title=title, legend_loc='upper right',
-                    x_tick_rotation=45, y_tick_rotation=0, cbar=cb)
+                    x_tick_rotation=45, y_tick_rotation=0, cbar=cb, base_fontsize=26)
     else:
-        if title:
-            ax.set_title(title)
-        ax.grid(True, alpha=0.3)
-        fig.tight_layout()
+        def _fallback_format(ax, title, cb, base_fontsize=26):
+            ax.set_title(title or "", fontsize=base_fontsize)
+            ax.xaxis.label.set_size(base_fontsize)
+            ax.yaxis.label.set_size(base_fontsize)
+            ax.tick_params(axis='both', labelsize=base_fontsize)
+            if cb:
+                cb.ax.tick_params(labelsize=base_fontsize * 0.8)
+            ax.grid(True, alpha=0.3)
+            fig.tight_layout()
+        _fallback_format(ax, title, cb)
 
     if savepath:
         Path(savepath).parent.mkdir(parents=True, exist_ok=True)
@@ -957,8 +1540,604 @@ def plot_chain_temperature_heatmap(
         "time_index": df_res.index,
         "depth_grid": depth_grid,
         "grid": grid,
-        "levels": levels
+        "levels": levels,
+        "raw_df": df_res,
+        "sensor_depths": sensor_depths,
+        "bedrock_depth": bedrock_depth  # NEW
     }
+
+# -------------------------------------------------------------------------
+# Mosaic helper: combine three chain heatmaps into one figure with shared cbar
+# -------------------------------------------------------------------------
+def mosaic_chain_heatmaps(
+    meta_list,
+    *,
+    titles=None,               # optional per-panel titles
+    show_titles=False,         # default off (no titles above panels)
+    panel_tags=("a", "b", "c"),
+    panel_fontsize=22,
+    figure_fontsize=22,
+    figsize=(14, 5),
+    dpi=300,
+    cmap=None,
+    savepath=None,
+    add_contours=True,
+    contour_kwargs=None,       # e.g., {"colors": "k", "linewidths": 0.6, "alpha": 0.35}
+    rasterize_heatmap=True,
+    two_rows=False,            # 2xN layout with time series below each heatmap
+    line_width=2.1,            # time-series line width
+    line_alpha=0.9,            # time-series line alpha
+    line_cmap=None,            # optional custom cmap; if None, use mono gradient
+    line_color_base=None,      # base color or colormap; if None, defaults to cmc.lajolla
+    ts_y_limits=None,          # tuple (ymin,ymax) or list/tuple of N tuples for per-panel limits
+    ts_y_tick_steps=None,      # float or list/tuple of N floats for per-panel y-tick step
+):
+    """
+    Create a mosaic from plot_chain_temperature_heatmap outputs.
+      - Default: 1xN heatmaps with shared colorbar (N = 2 or 3).
+      - If two_rows=True: 2xN layout, heatmaps on top, per-borehole time series below,
+        with legends listing sensor depths.
+    """
+    import numpy as np
+    import matplotlib.pyplot as plt
+    import matplotlib.dates as mdates
+    import matplotlib.colors as mcolors
+
+    if meta_list is None or len(meta_list) not in (2, 3):
+        raise ValueError("meta_list must be a list of two or three meta dictionaries.")
+    n_panels = len(meta_list)
+
+    # Shared levels
+    level_sets = [m.get("levels") for m in meta_list if m.get("levels") is not None]
+    if not level_sets:
+        raise ValueError("No levels found in meta_list; cannot build shared colorbar.")
+    levels = np.unique(np.concatenate(level_sets))
+    levels.sort()
+
+    # Colormap
+    if cmap is None:
+        def _discrete_icetemp_cmap_from_levels(levels_arr):
+            n_int = len(levels_arr) - 1
+            if n_int <= 0:
+                colors = np.array(cmc.vik(1.0)).reshape(1, -1)
+            else:
+                if n_int > 1:
+                    blue = cmc.vik(np.linspace(0.0, 0.5, n_int - 1))
+                    red = np.array(cmc.vik(0.95)).reshape(1, -1)
+                    colors = np.vstack([blue, red])
+                else:
+                    colors = np.array(cmc.vik(1.0)).reshape(1, -1)
+            return ListedColormap(colors, name="icetemp_discrete")
+        cmap = _discrete_icetemp_cmap_from_levels(levels)
+    norm = BoundaryNorm(levels, cmap.N, clip=True)
+
+    contour_opts = {"colors": "k", "linewidths": 0.6, "alpha": 0.35}
+    if contour_kwargs:
+        contour_opts = contour_kwargs
+
+    # Layout
+    if two_rows:
+        fig, axs = plt.subplots(
+            2, n_panels, figsize=figsize, dpi=dpi,
+            gridspec_kw={"height_ratios": [1.0, 0.55]},
+            sharex="col"
+        )
+        heat_axes = axs[0, :].ravel()
+        ts_axes = axs[1, :].ravel()
+    else:
+        fig, axs = plt.subplots(1, n_panels, figsize=figsize, dpi=dpi, sharey=False)
+        heat_axes = np.array(axs).ravel()
+        ts_axes = None
+
+    # Line colors
+    def _line_colors(n):
+        # Prefer explicit line_cmap if given
+        if line_cmap is not None:
+            return line_cmap(np.linspace(1, 0, n))  # reversed
+
+        base = line_color_base if line_color_base is not None else cmc.lajolla
+
+        # If a Matplotlib Colormap is provided
+        if isinstance(base, mcolors.Colormap):
+            return base(np.linspace(0.95, 0.25, n))  # reversed
+
+        # If a precomputed array of colors is provided (N x 3 or N x 4)
+        if isinstance(base, np.ndarray):
+            arr = base
+            if arr.ndim == 2 and arr.shape[1] in (3, 4):
+                idx = np.linspace(0, arr.shape[0] - 1, n).astype(int)
+                return arr[idx]
+            # fall through to single-color handling if shape is unexpected
+
+        # Otherwise treat as a single color and build a dark->light gradient (reversed)
+        base_rgb = np.array(mcolors.to_rgb(base))
+        weights = np.linspace(1.0, 0.35, n)[:, None]  # reversed
+        return np.clip(base_rgb * weights + (1.0 - weights), 0, 1)
+
+    # Shared bedrock band height (10% of global depth span)
+    br_band_frac = 0.10
+    zmins = [float(m["depth_grid"].min()) for m in meta_list]
+    zmaxs = [float(m["depth_grid"].max()) for m in meta_list]
+    z_span_global = max(zmaxs) - min(zmins)
+    rock_height_global = br_band_frac * max(z_span_global, 1e-6)    
+
+    im = None
+    for i, (ax, meta) in enumerate(zip(heat_axes, meta_list)):
+        times = meta["time_index"]
+        depth_grid = meta["depth_grid"]
+        grid = meta["grid"]
+        if len(times) < 2:
+            raise ValueError("Each meta must have at least two time points.")
+
+        t_num = mdates.date2num(times.to_pydatetime())
+        dt = np.diff(t_num)
+        t_edges = np.r_[t_num[0] - dt[0] / 2, t_num[:-1] + dt / 2, t_num[-1] + dt[-1] / 2]
+        dz = np.diff(depth_grid)
+        dz0 = dz[0] if len(dz) else 1.0
+        dzn = dz[-1] if len(dz) else 1.0
+        z_edges = np.r_[depth_grid[0] - dz0 / 2, depth_grid[:-1] + dz / 2, depth_grid[-1] + dzn / 2]
+
+        im = ax.pcolormesh(t_edges, z_edges, grid.T, cmap=cmap, norm=norm, shading="auto")
+        if rasterize_heatmap:
+            im.set_rasterized(True)
+        if add_contours:
+            try:
+                ax.contour(t_num, depth_grid, grid.T, levels=levels, **contour_opts)
+            except Exception:
+                pass
+        ax.invert_yaxis()
+
+        if show_titles and titles and i < len(titles):
+            ax.set_title(titles[i], fontsize=figure_fontsize)
+
+        # X ticks: day-month only (no time)
+        span = times[-1] - times[0]
+        span_days = span.total_seconds() / 86400.0
+        target_ticks = 8
+        step = max(1, round(span_days / target_ticks)) if span_days > 0 else 1
+        loc = mdates.DayLocator(interval=step)
+        fmt = mdates.DateFormatter("%b %d")
+        ax.xaxis.set_major_locator(loc)
+        ax.xaxis.set_major_formatter(fmt)
+        for label in ax.get_xticklabels():
+            label.set_rotation(45)
+
+        center_idx = n_panels // 2
+        ax.set_xlabel("Time" if (not two_rows and i == center_idx) else "",
+                      fontsize=figure_fontsize if (not two_rows and i == center_idx) else None)
+        ax.set_ylabel("Depth [m]" if i == 0 else "", fontsize=figure_fontsize if i == 0 else None)
+        ax.tick_params(axis='both', labelsize=figure_fontsize)
+
+        if panel_tags and i < len(panel_tags):
+            ax.text(
+                0.02, 0.98, f"({panel_tags[i]})",
+                transform=ax.transAxes,
+                ha='left', va='top',
+                fontsize=panel_fontsize, fontweight='bold', color='black',
+                bbox=dict(boxstyle='round,pad=0.15', fc='white', ec='none', alpha=1.0),
+                zorder=21
+            )
+
+        # Upper-right corner label with borehole title (e.g., AH1G, AH2G)
+        if titles and i < len(titles):
+            ax.text(
+                0.98, 0.98, titles[i],
+                transform=ax.transAxes,
+                ha='right', va='top',
+                fontsize=panel_fontsize * 0.85, fontweight='bold', color='black',
+                bbox=dict(boxstyle='round,pad=0.15', fc='white', ec='none', alpha=0.9),
+                zorder=21
+            )
+
+        ax.grid(True, alpha=0.3)
+
+        # --- Bedrock line, hatched gap to bedrock, and dark-gray bedrock band (match single heatmap) ---
+        try:
+            z_min = float(depth_grid.min())
+            z_max = float(depth_grid.max())
+            dz0 = dz0 if 'dz0' in locals() else (depth_grid[1] - depth_grid[0] if len(depth_grid) > 1 else 1.0)
+            z_range = max(z_max - z_min, dz0)
+
+            br = meta.get("bedrock_depth", None)
+            if br is not None and np.isfinite(br):
+                br = float(br)
+                bedrock_color = "0.35"
+                rock_height = 0.10 * z_range
+                rock_bottom = br + rock_height
+
+                # Bedrock line
+                ax.axhline(br, color="0.25", linewidth=2.2, linestyle="-", zorder=6)
+
+                # Hatched zone between deepest sensor and bedrock
+                if br > z_max:
+                    hk = {
+                        "facecolor": "none",
+                        "edgecolor": "0.25",
+                        "linewidth": 0.8,
+                        "hatch": "///",
+                        "alpha": 0.7,
+                        "zorder": 5
+                    }
+                    ax.fill_between(t_edges, z_max, br, **hk)
+
+                # Dark-gray bedrock band
+                ax.fill_between(
+                    t_edges,
+                    br,
+                    rock_bottom,
+                    facecolor=bedrock_color,
+                    edgecolor=bedrock_color,
+                    linewidth=0.0,
+                    alpha=1.0,
+                    zorder=4,
+                )
+
+                # Extend y-limits to show the bedrock band (respect inverted axis)
+                ax.set_ylim(rock_bottom, ax.get_ylim()[1])
+        except Exception:
+            pass
+
+        # Time series row
+        if two_rows:
+            ax_ts = ts_axes[i]
+            raw_df = meta.get("raw_df")
+            sensor_depths = meta.get("sensor_depths")
+            if raw_df is None or sensor_depths is None:
+                raise ValueError("two_rows=True requires meta to include 'raw_df' and 'sensor_depths'.")
+            sensor_cols = [c for c in raw_df.columns if c in sensor_depths]
+            sensor_cols = sorted(sensor_cols, key=lambda c: sensor_depths[c])
+            colors = _line_colors(len(sensor_cols))
+            for ccol, col in enumerate(sensor_cols):
+                series = pd.to_numeric(raw_df[col], errors="coerce")
+                if not np.isfinite(series).any():
+                    continue
+                ax_ts.plot(raw_df.index, series, color=colors[ccol],
+                           linewidth=line_width, alpha=line_alpha,
+                           label=f"{sensor_depths[col]:.1f} m")
+            ax_ts.axhline(0, color="k", linestyle="--", linewidth=1)
+            if i == 0:
+                ax_ts.set_ylabel("T [°C]", fontsize=figure_fontsize)
+            else:
+                ax_ts.set_ylabel("")
+            ax_ts.tick_params(axis='both', labelsize=figure_fontsize * 0.9)
+            ax_ts.grid(True, alpha=0.3)
+            # Legend outside, centered below each time-series panel
+            ax_ts.legend(frameon=True, fancybox=False, edgecolor="black", framealpha=1,
+                         facecolor="white", fontsize=figure_fontsize * 0.75,
+                         loc="upper center", bbox_to_anchor=(0.5, -0.65), ncol=3)
+
+            # Optional per-panel y-limits
+            if ts_y_limits is not None:
+                if isinstance(ts_y_limits, (list, tuple)) and len(ts_y_limits) == n_panels:
+                    yl = ts_y_limits[i]
+                else:
+                    yl = ts_y_limits  # apply same to all
+                if yl is not None and len(yl) == 2:
+                    ax_ts.set_ylim(float(yl[0]), float(yl[1]))
+
+            ax_ts.set_xlim(t_edges[0], t_edges[-1])
+            # No per-panel x-labels in two-row mode; use shared label instead
+            ax_ts.set_xlabel("")
+            # Rotate x-tick labels
+            for lbl in ax_ts.get_xticklabels():
+                lbl.set_rotation(45)
+
+            # Optional per-panel y-tick steps; skip if empty tuple or non-numeric
+            if ts_y_tick_steps not in (None, ()):
+                step_val = ts_y_tick_steps[i] if isinstance(ts_y_tick_steps, (list, tuple)) and len(ts_y_tick_steps) == n_panels else ts_y_tick_steps
+                try:
+                    step = float(step_val)
+                    if step > 0:
+                        ymin, ymax = ax_ts.get_ylim()
+                        y0 = np.floor(ymin / step) * step
+                        y1 = np.ceil(ymax / step) * step
+                        ax_ts.set_yticks(np.arange(y0, y1 + step * 0.5, step))
+                except (TypeError, ValueError):
+                    pass
+            elif i == center_idx:
+                ymin, ymax = ax_ts.get_ylim()
+                yticks = np.arange(np.floor(ymin), np.ceil(ymax) + 0.5, 1.0)
+                ax_ts.set_yticks(yticks)
+
+    # Shared horizontal colorbar
+    if im is not None:
+        fig.tight_layout()
+        ref_axes = list(ts_axes) if two_rows else list(heat_axes)
+        left = min(ax.get_position().x0 for ax in ref_axes)
+        right = max(ax.get_position().x1 for ax in ref_axes)
+        bottom = min(ax.get_position().y0 for ax in ref_axes)
+        pad = 0.37 if two_rows else 0.18   # extra space so legends don’t overlap colorbar
+        height = 0.05
+        cax = fig.add_axes([left, bottom - pad, right - left, height])
+        cb = fig.colorbar(im, cax=cax, orientation="horizontal")
+        cb.set_label(r"Ice Temperature [°C]", fontsize=figure_fontsize)
+        cold_ticks = [lv for lv in levels if lv < 0.0 and not np.isclose(lv, -0.1, atol=1e-2)]
+        cb.set_ticks(cold_ticks + [0.0])
+        cb.set_ticklabels([f"{t:.1f}" for t in cold_ticks] + [r"≈T$_{pmp}$"])
+        cb.ax.tick_params(labelsize=figure_fontsize)
+        ticks_txt = cb.ax.get_xticklabels()
+        if ticks_txt:
+            ticks_txt[-1].set_ha('left')
+            ticks_txt[-1].set_x(ticks_txt[-1].get_position()[0] + 0.08)
+
+    # Shared x-label for time (centered between panels) when two_rows is enabled
+    if two_rows:
+        fig.supxlabel("Time", fontsize=figure_fontsize, y=0.19)
+
+    if savepath:
+        Path(savepath).parent.mkdir(parents=True, exist_ok=True)
+        with plt.rc_context({"pdf.compression": 9}):
+            fig.savefig(savepath, dpi=dpi, bbox_inches="tight")
+
+    return fig, heat_axes if not two_rows else (heat_axes, ts_axes)
+
+def plot_gp_statistics(
+    meta_dict,
+    savepath=None,
+    title=None,
+    borehole_label=None,  # optional override
+    figsize=(12, 8),
+    dpi=300,
+    base_fontsize=14,
+    show_boxplot=True,
+    show_table=True,
+    seasonal_months=None,  # e.g., [(6,7,8), (12,1,2)] for summer/winter
+    equilibration_days=4   # exclude first N days
+):
+    """
+    Create statistical summary of GeoPrecision temperature data with table and boxplot.
+    
+    Parameters
+    ----------
+    meta_dict : dict
+        Output from plot_chain_temperature_heatmap containing:
+        - 'raw_df': DataFrame with calibrated temperature data (TIME as index)
+        - 'sensor_depths': dict mapping sensor columns to depths
+        - 'borehole_label': borehole identifier (optional, can override)
+    savepath : str, optional
+        Path to save the figure
+    title : str, optional
+        Plot title (defaults to "{label} Temperature Statistics")
+    borehole_label : str, optional
+        Override borehole label from meta_dict
+    figsize : tuple
+        Figure size
+    dpi : int
+        Figure DPI
+    base_fontsize : int
+        Base font size
+    show_boxplot : bool
+        Show boxplot of temperature distributions
+    show_table : bool
+        Show statistical summary table
+    seasonal_months : list[tuple], optional
+        List of month tuples for seasonal analysis, e.g., [(6,7,8), (12,1,2)]
+    equilibration_days : int
+        Number of days to skip at start (default 4)
+    
+    Returns
+    -------
+    fig, stats_df
+        Figure and DataFrame with statistics
+    """
+    import pandas as pd
+    import numpy as np
+    import matplotlib.pyplot as plt
+    from pathlib import Path
+    
+    # Extract from meta dictionary
+    data = meta_dict['raw_df'].copy()
+    depths_dict = meta_dict['sensor_depths']
+    label = borehole_label or meta_dict.get('borehole_label', 'Chain')
+    
+    if data is None or data.empty:
+        raise ValueError("No data available in meta dictionary")
+    
+    # Reset index to make TIME a column
+    if data.index.name == 'TIME':
+        data = data.reset_index()
+    
+    # Process timestamps and skip equilibration period
+    data['TIME'] = pd.to_datetime(data['TIME'])
+    data = data.sort_values('TIME')
+    
+    if equilibration_days > 0:
+        cutoff = data['TIME'].min() + pd.Timedelta(days=equilibration_days)
+        data = data[data['TIME'] >= cutoff]
+    
+    if data.empty:
+        raise ValueError("No data remaining after equilibration period")
+    
+    # Identify sensor columns (all columns except TIME)
+    sensor_cols = [col for col in data.columns if col != 'TIME' and col in depths_dict]
+    
+    if not sensor_cols:
+        raise ValueError("No valid sensor columns found with depths")
+    
+    # Sort by depth
+    sensor_cols = sorted(sensor_cols, key=lambda c: float(depths_dict[c]))
+    
+    # Color from color map
+    color_map = build_profile_color_map([label])
+    color = color_map.get(label, cmc.batlowK(0.5))
+    
+    def compute_statistics(data_df, sensor_columns, depths):
+        """Compute comprehensive statistics for each sensor"""
+        stats_list = []
+        
+        # Add month column for seasonal analysis
+        data_df = data_df.copy()
+        data_df['month'] = data_df['TIME'].dt.month
+        
+        for sensor in sensor_columns:
+            depth = float(depths[sensor])
+            temps = pd.to_numeric(data_df[sensor], errors='coerce').dropna()
+            
+            if temps.empty:
+                continue
+            
+            stats = {
+                'Borehole': label,
+                'Sensor': sensor,
+                'Depth [m]': depth,
+                'Mean [°C]': temps.mean(),
+                'Median [°C]': temps.median(),
+                'Std Dev [°C]': temps.std(),
+                'Min [°C]': temps.min(),
+                'Max [°C]': temps.max(),
+                'Range [°C]': temps.max() - temps.min(),
+                'Q25 [°C]': temps.quantile(0.25),
+                'Q75 [°C]': temps.quantile(0.75),
+                'IQR [°C]': temps.quantile(0.75) - temps.quantile(0.25),
+                'N samples': len(temps)
+            }
+            
+            # Seasonal statistics
+            if seasonal_months:
+                for i, months in enumerate(seasonal_months, 1):
+                    mask = data_df['month'].isin(months)
+                    seasonal_temps = data_df.loc[mask, sensor]
+                    seasonal_temps = pd.to_numeric(seasonal_temps, errors='coerce').dropna()
+                    
+                    if not seasonal_temps.empty:
+                        stats[f'Season{i} Mean [°C]'] = seasonal_temps.mean()
+                        stats[f'Season{i} Std [°C]'] = seasonal_temps.std()
+                
+                # Annual amplitude
+                if len(seasonal_months) == 2:
+                    s1_key = f'Season1 Mean [°C]'
+                    s2_key = f'Season2 Mean [°C]'
+                    if s1_key in stats and s2_key in stats:
+                        stats['Annual Amplitude [°C]'] = abs(stats[s1_key] - stats[s2_key])
+            
+            stats_list.append(stats)
+        
+        return pd.DataFrame(stats_list) if stats_list else None
+    
+    # Compute statistics
+    stats_df = compute_statistics(data, sensor_cols, depths_dict)
+    
+    if stats_df is None or stats_df.empty:
+        raise ValueError("No valid statistics computed")
+    
+    # Create figure
+    n_panels = sum([show_table, show_boxplot])
+    if n_panels == 0:
+        raise ValueError("Must show at least table or boxplot")
+    
+    fig = plt.figure(figsize=figsize, dpi=dpi)
+    
+    if show_table and show_boxplot:
+        gs = fig.add_gridspec(2, 1, height_ratios=[1, 1.5], hspace=0.3)
+        ax_table = fig.add_subplot(gs[0])
+        ax_box = fig.add_subplot(gs[1])
+    elif show_table:
+        ax_table = fig.add_subplot(111)
+        ax_box = None
+    else:
+        ax_table = None
+        ax_box = fig.add_subplot(111)
+    
+    # Table
+    if show_table and ax_table:
+        ax_table.axis('off')
+        
+        # Display columns
+        display_cols = ['Sensor', 'Depth [m]', 'Mean [°C]', 'Std Dev [°C]', 
+                        'Min [°C]', 'Max [°C]', 'Range [°C]', 'N samples']
+        
+        # Add seasonal columns if present
+        season_cols = [c for c in stats_df.columns if 'Season' in c or 'Amplitude' in c]
+        display_cols.extend(season_cols)
+        
+        table_data = stats_df[display_cols].copy()
+        
+        # Round numeric columns
+        for col in table_data.columns:
+            if '[°C]' in col or '[m]' in col:
+                table_data[col] = table_data[col].round(3)
+            elif 'N samples' in col:
+                table_data[col] = table_data[col].astype(int)
+        
+        # Create table
+        cell_text = table_data.values.tolist()
+        col_labels = [col.replace(' [°C]', '\n[°C]').replace(' [m]', '\n[m]') for col in display_cols]
+        
+        table = ax_table.table(
+            cellText=cell_text,
+            colLabels=col_labels,
+            cellLoc='center',
+            loc='center',
+            bbox=[0, 0, 1, 1]
+        )
+        
+        table.auto_set_font_size(False)
+        table.set_fontsize(base_fontsize * 0.7)
+        table.scale(1, 2)
+        
+        # Style header
+        for i in range(len(col_labels)):
+            cell = table[(0, i)]
+            cell.set_facecolor('#4472C4')
+            cell.set_text_props(weight='bold', color='white')
+        
+        # Alternating row colors
+        for i in range(1, len(cell_text) + 1):
+            for j in range(len(col_labels)):
+                cell = table[(i, j)]
+                if i % 2 == 0:
+                    cell.set_facecolor('#E7E6E6')
+                else:
+                    cell.set_facecolor('white')
+        
+        ax_table.set_title(title or f'{label} Temperature Statistics', 
+                          fontsize=base_fontsize * 1.2, weight='bold', pad=20)
+    
+    # Boxplot
+    if show_boxplot and ax_box:
+        box_data = []
+        box_labels = []
+        
+        for sensor in sensor_cols:
+            temps = pd.to_numeric(data[sensor], errors='coerce').dropna()
+            if not temps.empty:
+                box_data.append(temps.values)
+                depth = depths_dict[sensor]
+                box_labels.append(f"{sensor}\n({depth:.1f}m)")
+        
+        bp = ax_box.boxplot(box_data, labels=box_labels, patch_artist=True,
+                            notch=True, showmeans=True,
+                            meanprops=dict(marker='D', markerfacecolor='red', 
+                                          markeredgecolor='darkred', markersize=6))
+        
+        # Color boxes
+        for patch in bp['boxes']:
+            patch.set_facecolor(color)
+            patch.set_alpha(0.6)
+        
+        ax_box.set_ylabel('Temperature [°C]', fontsize=base_fontsize)
+        ax_box.axhline(0, color='k', linestyle='--', linewidth=1.5, alpha=0.7)
+        ax_box.grid(True, alpha=0.3, axis='y')
+        ax_box.tick_params(labelsize=base_fontsize * 0.9)
+        
+        if not show_table:
+            ax_box.set_title(title or f'{label} Temperature Distribution', 
+                            fontsize=base_fontsize * 1.2, weight='bold')
+    
+    fig.tight_layout()
+    
+    # Save
+    if savepath:
+        out_path = Path(savepath)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        fig.savefig(out_path, dpi=dpi, bbox_inches="tight")
+        
+        # Also save CSV
+        csv_path = out_path.with_suffix('.csv')
+        stats_df.to_csv(csv_path, index=False)
+        print(f"Statistics saved to: {csv_path}")
+    
+    return fig, stats_df
 
 def plot_ntc_temperature_heatmap(
     thermistor,
@@ -1249,48 +2428,11 @@ def _disperse_positions(k: int, start: float, end: float, reserved: list[float])
 
 def build_profile_color_map(labels):
     """
-    Categorical color mapping from cmcrameri 'batlowK' (exclude brightest 20%).
-    Fixed anchors:
-      - '*1TT' -> near dark end
-      - '*2TT' -> near upper end of kept range
-      - '*1JG' or '*1G' -> stable mid‑dark
-      - '*2JG' or '*2G' -> stable mid‑high
-      - '*3JG' or '*3G' -> stable low‑mid
-    Remaining labels are spaced to maximize separation within [0.0, 0.8].
+    Categorical color mapping from cmcrameri 'romaO' (cyclic, perceptually uniform).
+    Sampled evenly across [0.05, 0.75] to get muted but distinct hues.
     """
     labs = [str(l) for l in (list(labels or []))]
-    ulabels = [l.upper() for l in labs]
-
-    # Range (drop brightest 20%)
-    start, end = 0.0, 0.8
-
-    # Anchors
-    pos_1tt = start + 0.08   # dark side
-    pos_2tt = end   - 0.06   # high side (still < 0.8)
-    # JG/G anchors (chosen to match the visual style you liked)
-    pos_1jg = 0.34          # olive/greenish
-    pos_2jg = 0.58          # ochre/mustard
-    pos_3jg = 0.20          # darker green/teal
-
-    reserved_pos = {}
-    for lab, u in zip(labs, ulabels):
-        if u.endswith("1TT"):
-            reserved_pos[lab] = pos_1tt
-        elif u.endswith("2TT"):
-            reserved_pos[lab] = pos_2tt
-        elif u.endswith("1JG") or u.endswith("1G"):
-            reserved_pos[lab] = pos_1jg
-        elif u.endswith("2JG") or u.endswith("2G"):
-            reserved_pos[lab] = pos_2jg
-        elif u.endswith("3JG") or u.endswith("3G"):
-            reserved_pos[lab] = pos_3jg
-
-    # Disperse remaining labels
-    remaining = [lab for lab in labs if lab not in reserved_pos]
-    positions_rem = _disperse_positions(len(remaining), start, end, list(reserved_pos.values()))
-    for lab, pos in zip(remaining, positions_rem):
-        reserved_pos[lab] = float(pos)
-
-    # Convert to colors
-    colors = {lab: cmc.batlowK(float(np.clip(pos, 0.0, 1.0))) for lab, pos in reserved_pos.items()}
-    return colors
+    if not labs:
+        return {}
+    positions = np.linspace(0.05, 0.75, len(labs))
+    return {lab: cmc.romaO(float(pos)) for lab, pos in zip(labs, positions)}
