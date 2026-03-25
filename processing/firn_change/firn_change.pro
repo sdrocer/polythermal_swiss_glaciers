@@ -146,6 +146,7 @@ for g=0,ng-1 do begin
 
 ; read mass balance grids
 READ_AGR,dir+glacier(g)+'/massbalance/results/massbalmeas_'+string(tran(1),fo='(i4)')+'.grid',b,ncols=nc,nrows=nr,header=head
+glacier_mask = (b ne noval)  ; 1 = on-glacier, 0 = off-glacier (determined once from reference year)
 bal=dblarr(len,nc,nr)+noval
 for i=0,len-1 do begin
    a=findfile(dir+glacier(g)+'/massbalance/results/massbalmeas_'+string(tran(0)+i,fo='(i4)')+'.grid')
@@ -164,6 +165,7 @@ age=firn+noval              ; average age of firn layers - final evaluation
 time_since_firn=firn+noval  ; years since firn disappeared (only where duration >= 2yr) - final evaluation
 firn_duration=intarr(nc,nr)  ; consecutive years with firn per cell (for 2-year criterion)
 year_firn_lost=firn+noval    ; year in which firn last disappeared at each cell
+firn_area_ts=lonarr(len)     ; annual count of firn cells (for time-series output)
 
 ; loop over years
 for i=0,len-1 do begin
@@ -175,7 +177,7 @@ for i=0,len-1 do begin
    firnlast=firn
    if ci gt 0 then firn(ii)=firn(ii)+b(ii)
    if cj gt 0 then firn(jj)=firn(jj)+b(jj)
-   kk=where(b eq noval,ck) & if ck gt 0 then firn(kk)=noval
+   kk=where(glacier_mask eq 0,ck) & if ck gt 0 then firn(kk)=noval
    kk=where(firn lt 0 and firn gt -100,ck) & firn(kk)=0
 
    ; track firn duration and detect disappearance (minimum 2-year criterion)
@@ -230,7 +232,17 @@ for cc=0,nc-1 do begin
    endfor
 endfor
 
+; record firn cell count for this year (only cells with >= 2 consecutive years of firn)
+ii=where(firn_duration ge 2,ci) & firn_area_ts(i)=ci
+
 endfor    ; loop over years to be evaluated
+
+; write annual firn area CSV
+fn_csv = dirout + 'firn_area_annual_' + glacier(g) + '.csv'
+openw, 9, fn_csv
+printf, 9, 'year,firn_cells'
+for i=0,len-1 do printf, 9, string(tran(0)+i,fo='(i4)') + ',' + strtrim(firn_area_ts(i),2)
+close, 9
 
 ; -----------------------
 ; finalize evaluation, write out grids

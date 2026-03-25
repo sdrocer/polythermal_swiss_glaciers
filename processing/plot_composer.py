@@ -1326,6 +1326,7 @@ def draw_glacier_map(
     show_borehole_labels: bool = True,
     show_bedrock_depth: bool = False,  # NEW ARGUMENT
     gdf_pts_2: gpd.GeoDataFrame | None = None,
+    show_contours: bool = True,
     show_flow_arrow: bool = True,
     flow_arrow_angle_deg: float | None = None,   # override computed direction (0=east, 90=north)
     flow_arrow_pos_offset: tuple | None = None,  # (dx, dy) in map units to shift arrow start
@@ -1403,13 +1404,14 @@ def draw_glacier_map(
         imshow_tif(ax, ortho_path)
 
     # DEM contours
-    gprp.plot_dem_contours_from_tiles(
-        ax, dem_tiles, bbox=bbox, pixel_size=2.0,
-        minor_step=25.0, major_step=50.0,
-        minor_kwargs={'linewidths':0.25, 'colors':'k', 'alpha':0.4},
-        major_kwargs={'linewidths':0.6,  'colors':'k', 'alpha':0.55},
-        zorder_minor=6, zorder_major=7, label=True, label_fmt="%.0f m"
-    )
+    if show_contours:
+        gprp.plot_dem_contours_from_tiles(
+            ax, dem_tiles, bbox=bbox, pixel_size=2.0,
+            minor_step=25.0, major_step=50.0,
+            minor_kwargs={'linewidths':0.25, 'colors':'k', 'alpha':0.4},
+            major_kwargs={'linewidths':0.6,  'colors':'k', 'alpha':0.55},
+            zorder_minor=6, zorder_major=7, label=True, label_fmt="%.0f m"
+        )
     hide_edge_map_labels(ax, margin_frac=0.02)
 
     # Will hold the reprojected/cleaned outline polygon GDF for flow-arrow DEM masking

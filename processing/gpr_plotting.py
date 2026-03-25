@@ -1159,7 +1159,7 @@ def plot_icetemp_profile(
     # Panel tag
     panel_tag: str | None = None,
     panel_tag_color: str = 'red',
-    tag_loc: str = "TR",
+    tag_loc: str = "BR",
     tag_bbox: bool | dict = True,
     tag_kwargs: dict | None = None,
     # Export paths
@@ -1176,6 +1176,14 @@ def plot_icetemp_profile(
     hatch_alpha: float = 0.0,
     hatch_linewidth: float = 0.5,
     hatch_fill_color: str | None = None,
+    # Firn cover indicator
+    firn_grid=None,
+    firn_tfm=None,
+    firn_color: str = '#2e8b9a',
+    firn_lw: float = 4.0,
+    firn_offset: float = 1.3,
+    firn_year: int | None = None,
+    firn_zorder: int = 15,
     **deprecated
 ):
     """
@@ -1240,6 +1248,23 @@ def plot_icetemp_profile(
                 prof = prof.loc[clip_mask].reset_index(drop=True)
         borehole_locs_for_pad = bh_locs
 
+    # Sample firn grid at profile (x, y) coordinates
+    firn_at_dist = None
+    if firn_grid is not None and firn_tfm is not None:
+        if 'x' in prof.columns and 'y' in prof.columns:
+            xs = prof['x'].values.astype(float)
+            ys = prof['y'].values.astype(float)
+            nrows, ncols_grid = firn_grid.shape
+            # Nearest-neighbour lookup via inverse affine
+            cols_f = (xs - firn_tfm.c) / firn_tfm.a
+            rows_f = (ys - firn_tfm.f) / firn_tfm.e
+            ci = np.clip(np.round(cols_f).astype(int), 0, ncols_grid - 1)
+            ri = np.clip(np.round(rows_f).astype(int), 0, nrows - 1)
+            firn_vals = firn_grid[ri, ci]
+            firn_at_dist = np.isfinite(firn_vals) & (firn_vals > 0)
+        else:
+            print("[plot_icetemp_profile] firn_grid provided but profile has no x/y columns — skipping firn indicator")
+
     # Color mapping
     measured = _collect_measured_values(temp_data_dict)
     if cbar_min is not None:
@@ -1272,7 +1297,7 @@ def plot_icetemp_profile(
 
     fig, ax = (plt.subplots(figsize=(9, 5), dpi=300) if ax is None else (ax.figure, ax))
     segments = _segment_indices(dist, float(break_threshold))
-    im = None; first_seg = True; cts_label_done = False
+    im = None; first_seg = True; cts_label_done = False; firn_label_done = False
 
     txt_exported = False
     cts_mask_exported = False
@@ -1365,6 +1390,20 @@ def plot_icetemp_profile(
                 label='Surface' if first_seg else None, zorder=10)
         ax.plot(seg_dist, zb_seg, color='k', lw=1.4, ls='--',
                 label='Bed' if first_seg else None, zorder=10)
+
+        # Firn cover indicator — thick line slightly above surface where firn > 0
+        if firn_at_dist is not None:
+            firn_seg = firn_at_dist[i0:i1]
+            if firn_seg.any():
+                firn_x = np.ma.masked_where(~firn_seg, seg_dist)
+                firn_z = np.ma.masked_where(~firn_seg, zs_seg + firn_offset)
+                _firn_label = None
+                if not firn_label_done:
+                    _firn_label = f'Firn cover ({firn_year})' if firn_year is not None else 'Firn cover'
+                    firn_label_done = True
+                ax.plot(firn_x, firn_z, color=firn_color, lw=firn_lw,
+                        solid_capstyle='round', zorder=firn_zorder,
+                        label=_firn_label)
 
         if unc_arr is not None:
             unc_seg = unc_arr[i0:i1]
