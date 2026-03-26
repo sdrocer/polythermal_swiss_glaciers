@@ -1011,7 +1011,7 @@ def _plot_cts_layers(ax, elevs, xnodes, zs_on_x, zb_on_x, info, cts_tol,
         is_basal = frac_basal >= basal_frac_threshold
 
         if not label_once_flag:
-            lbl = ('Estimated CTS (p-adjusted)' if adjust_cts_for_pressure
+            lbl = ('CTS (pmp-adj.)' if adjust_cts_for_pressure
                    else 'Estimated CTS (≈0°C)')
             label_once_flag = True
         else:
@@ -1176,14 +1176,22 @@ def plot_icetemp_profile(
     hatch_alpha: float = 0.0,
     hatch_linewidth: float = 0.5,
     hatch_fill_color: str | None = None,
-    # Firn cover indicator
+    # Firn cover indicator (recent year — line 1, upper)
     firn_grid=None,
     firn_tfm=None,
     firn_color: str = '#2e8b9a',
     firn_lw: float = 4.0,
-    firn_offset: float = 1.3,
+    firn_offset: float = 2.7,
     firn_year: int | None = None,
     firn_zorder: int = 15,
+    # Firn cover indicator (older year — line 2, lower)
+    firn_grid2=None,
+    firn_tfm2=None,
+    firn_color2: str = '#e67e22',
+    firn_lw2: float = 4.0,
+    firn_offset2: float = 1.2,
+    firn_year2: int | None = None,
+    firn_zorder2: int = 14,
     **deprecated
 ):
     """
@@ -1265,6 +1273,20 @@ def plot_icetemp_profile(
         else:
             print("[plot_icetemp_profile] firn_grid provided but profile has no x/y columns — skipping firn indicator")
 
+    # Sample second firn grid (older year)
+    firn_at_dist2 = None
+    if firn_grid2 is not None and firn_tfm2 is not None:
+        if 'x' in prof.columns and 'y' in prof.columns:
+            xs = prof['x'].values.astype(float)
+            ys = prof['y'].values.astype(float)
+            nrows2, ncols_grid2 = firn_grid2.shape
+            cols_f2 = (xs - firn_tfm2.c) / firn_tfm2.a
+            rows_f2 = (ys - firn_tfm2.f) / firn_tfm2.e
+            ci2 = np.clip(np.round(cols_f2).astype(int), 0, ncols_grid2 - 1)
+            ri2 = np.clip(np.round(rows_f2).astype(int), 0, nrows2 - 1)
+            firn_vals2 = firn_grid2[ri2, ci2]
+            firn_at_dist2 = np.isfinite(firn_vals2) & (firn_vals2 > 0)
+
     # Color mapping
     measured = _collect_measured_values(temp_data_dict)
     if cbar_min is not None:
@@ -1297,7 +1319,7 @@ def plot_icetemp_profile(
 
     fig, ax = (plt.subplots(figsize=(9, 5), dpi=300) if ax is None else (ax.figure, ax))
     segments = _segment_indices(dist, float(break_threshold))
-    im = None; first_seg = True; cts_label_done = False; firn_label_done = False
+    im = None; first_seg = True; cts_label_done = False; firn_label_done = False; firn_label_done2 = False
 
     txt_exported = False
     cts_mask_exported = False
@@ -1404,6 +1426,20 @@ def plot_icetemp_profile(
                 ax.plot(firn_x, firn_z, color=firn_color, lw=firn_lw,
                         solid_capstyle='round', zorder=firn_zorder,
                         label=_firn_label)
+
+        # Second firn cover indicator (older year — lower line)
+        if firn_at_dist2 is not None:
+            firn_seg2 = firn_at_dist2[i0:i1]
+            if firn_seg2.any():
+                firn_x2 = np.ma.masked_where(~firn_seg2, seg_dist)
+                firn_z2 = np.ma.masked_where(~firn_seg2, zs_seg + firn_offset2)
+                _firn_label2 = None
+                if not firn_label_done2:
+                    _firn_label2 = f'Firn cover ({firn_year2})' if firn_year2 is not None else 'Firn cover (older)'
+                    firn_label_done2 = True
+                ax.plot(firn_x2, firn_z2, color=firn_color2, lw=firn_lw2,
+                        solid_capstyle='round', zorder=firn_zorder2,
+                        label=_firn_label2)
 
         if unc_arr is not None:
             unc_seg = unc_arr[i0:i1]

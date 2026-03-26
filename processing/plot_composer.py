@@ -1663,11 +1663,11 @@ def draw_glacier_map(
             txt_va = 'top' if ((title == "Chessjen" and r.get('name') == "CJ1G") or 
                                (title == "Hohsaas" and r.get('name') == "HS3G")) else 'bottom'
             
-            # Draw standard borehole marker (no star overlay anymore)
+            # Draw standard borehole marker
             ax.scatter(r.geometry.x, r.geometry.y,
                        s=40, marker='o', color=bh_color, edgecolors='black',
-                       linewidths=1, alpha=0.95, zorder=9, label='Boreholes')
-            
+                       linewidths=1, alpha=0.95, zorder=15, label='Boreholes')
+
             # Borehole name label (strip glacier abbreviation prefix, e.g. "AH1G" -> "1G")
             if show_borehole_labels:
                 bh_name = r.get('name', '')
@@ -1677,12 +1677,26 @@ def draw_glacier_map(
                 else:
                     bh_label = bh_name
                 import matplotlib.transforms as _transforms
-                offset_y = -2 if txt_va == 'top' else 2
-                tr = _transforms.offset_copy(ax.transData, fig=ax.figure, x=2, y=offset_y, units='points')
+                # Per-borehole label position overrides: (ha, va, offset_x, offset_y)
+                _bh_label_pos = {
+                    ("Hohsaas",   "HS2TT"): ('right', 'bottom', -2,  2),
+                    ("Chessjen",  "CJ3TT"): ('right', 'bottom', -2,  2),
+                    ("Corvatsch", "CV1TT"): ('right', 'bottom', -2,  2),
+                    ("Alphubel",  "AH3TT"): ('right', 'bottom', -2,  2),
+                    ("Alphubel",  "AH2TT"): ('left',  'top',     2, -2),
+                    ("Alphubel",  "AH1TT"): ('left',  'top',     2, -2),
+                }
+                _pos = _bh_label_pos.get((title, bh_name))
+                if _pos:
+                    _txt_ha, _lbl_va, _offset_x, offset_y = _pos
+                else:
+                    _txt_ha, _lbl_va, _offset_x = 'left', txt_va, 2
+                    offset_y = -2 if txt_va == 'top' else 2
+                tr = _transforms.offset_copy(ax.transData, fig=ax.figure, x=_offset_x, y=offset_y, units='points')
                 ax.text(r.geometry.x, r.geometry.y, bh_label,
-                        fontsize=ANNO_FONTSIZE-2, color='k', ha='left', va=txt_va,
+                        fontsize=ANNO_FONTSIZE-2, color='k', ha=_txt_ha, va=_lbl_va,
                         bbox=dict(boxstyle='round,pad=0.15', fc='white', ec='none', alpha=0.95),
-                        transform=tr, zorder=10)
+                        transform=tr, zorder=16)
             
             # Bedrock depth annotation (if enabled and reached bedrock)
             if show_bedrock_depth and reached_bedrock:
@@ -1763,6 +1777,62 @@ def draw_glacier_map(
                             bbox=dict(boxstyle='round,pad=0.25', fc='white',
                                     ec='k', lw=1.0, alpha=0.95),
                             zorder=11)
+
+    # --- Previously measured borehole reference annotations ------------------
+    # Sex Rouge: "Fischer (2018)" with lines to SR1TT and SR2TT
+    # Corvatsch: "Haeberli et al. (2004)" with line to CV2TT
+    if (boreholes is not None) and (not boreholes.empty):
+        _ref_targets = {}
+        if title == "Sex Rouge":
+            _ref_targets["Fischer (2018)"] = {"SR1TT", "SR2TT"}
+        elif title == "Corvatsch":
+            _ref_targets["Haeberli et al. (2004)"] = {"CV2TT"}
+
+        for _ref_label, _bh_names in _ref_targets.items():
+            # Collect positions of target boreholes
+            _bh_pos = {}
+            for _, r in boreholes.iterrows():
+                if r.get('name', '') in _bh_names:
+                    _bh_pos[r['name']] = (r.geometry.x, r.geometry.y)
+            if not _bh_pos:
+                continue
+
+            # Place text at centroid of target boreholes, offset toward bbox edge
+            _xs = [p[0] for p in _bh_pos.values()]
+            _ys = [p[1] for p in _bh_pos.values()]
+            _mid_x = sum(_xs) / len(_xs)
+            _mid_y = sum(_ys) / len(_ys)
+            _x0b, _y0b, _x1b, _y1b = bbox
+            _cx, _cy = (_x0b + _x1b) / 2, (_y0b + _y1b) / 2
+            _panel_w = _x1b - _x0b
+            # Offset text away from glacier center
+            _dx = _mid_x - _cx
+            _dy = _mid_y - _cy
+            _off = _panel_w * 0.18
+            _norm = (_dx**2 + _dy**2) ** 0.5 or 1
+            _txt_x = _mid_x + _dx / _norm * _off
+            _txt_y = _mid_y + _dy / _norm * _off
+            # Manual fine-tuning offsets (map units)
+            _fine_tune = {
+                "Fischer (2018)":        ( 40,  100),
+                "Haeberli et al. (2004)": (120,  150),
+            }
+            _ftx, _fty = _fine_tune.get(_ref_label, (0, 0))
+            _txt_x += _ftx
+            _txt_y += _fty
+            _ha = 'left' if _dx >= 0 else 'right'
+            _va = 'bottom' if _dy >= 0 else 'top'
+
+            # Draw text box
+            ax.text(_txt_x, _txt_y, _ref_label,
+                    fontsize=ANNO_FONTSIZE - 3, color='k', ha=_ha, va=_va,
+                    style='italic',
+                    bbox=dict(boxstyle='round,pad=0.2', fc='white', ec='none', alpha=0.9),
+                    zorder=18)
+            # Draw leader lines from text anchor to each borehole
+            for _bx, _by in _bh_pos.values():
+                ax.plot([_txt_x, _bx], [_txt_y, _by],
+                        color='k', linewidth=0.7, linestyle='-', zorder=17, alpha=0.8)
 
     # --- Flow direction arrow ------------------------------------------------
     # Draws a small downslope arrow near the glacier terminus, derived from the
@@ -1852,7 +1922,7 @@ def draw_glacier_map(
                         _norm = 1.0
 
                     if _norm > 0 and not np.isnan(_norm):
-                        _alen = (_x1b - _x0b) * 0.15   # arrow length = 15 % of panel width
+                        _alen = (_x1b - _x0b) * 0.10   # arrow length = 10 % of panel width
                         _dx = _fe_m / _norm * _alen
                         _dy = _fn_m / _norm * _alen
 
@@ -1950,7 +2020,8 @@ def compress_figure_inplace(input_path, max_size_mb=5):
     Adjusted to be less aggressive to avoid visible pixelation:
       - PNG: prefer lossless optimizations and quantization before resizing;
              limit downscaling and use smaller steps.
-      - PDF: try higher-quality Ghostscript presets first.
+      - PDF: try higher-quality Ghostscript presets first, then explicit DPI
+             downsampling (150 → 120 → 96 dpi) if presets are insufficient.
     """
     ext = str(input_path).lower().split('.')[-1]
     max_bytes = int(max_size_mb * 1024 * 1024)
@@ -2018,45 +2089,82 @@ def compress_figure_inplace(input_path, max_size_mb=5):
         return input_path
 
     elif ext == "pdf":
-        # Use higher-quality GS presets first to avoid pixelation, fallback to smaller presets if needed
+        # Strategy: only downsample embedded raster images (orthophotos) using
+        # Ghostscript — vector elements (axes, labels, lines) are never rasterized
+        # and stay sharp. We try progressively lower image DPI / JPEG quality until
+        # the file fits.
         tmp_path = str(input_path) + ".tmp.pdf"
-        gs_cmd = [
-            "gs",
-            "-sDEVICE=pdfwrite",
-            "-dCompatibilityLevel=1.4",
-            "-dNOPAUSE",
-            "-dQUIET",
-            "-dBATCH",
-            f"-sOutputFile={tmp_path}",
-            str(input_path)
+
+        def _gs_image_only(preset, dpi):
+            """Run Ghostscript compressing only embedded raster images.
+            Uses a PDFSETTINGS preset for JPEG quality baseline, then
+            overrides DPI. Vectors (text, lines, axes) are never rasterized.
+            """
+            cmd = [
+                "gs",
+                "-sDEVICE=pdfwrite",
+                "-dCompatibilityLevel=1.5",
+                "-dNOPAUSE", "-dQUIET", "-dBATCH",
+                f"-dPDFSETTINGS={preset}",
+                # Override image resolution
+                "-dDownsampleColorImages=true",
+                "-dDownsampleGrayImages=true",
+                "-dColorImageDownsampleType=/Bicubic",
+                "-dGrayImageDownsampleType=/Bicubic",
+                f"-dColorImageResolution={dpi}",
+                f"-dGrayImageResolution={dpi}",
+                f"-sOutputFile={tmp_path}",
+                str(input_path),
+            ]
+            subprocess.run(cmd, check=True)
+
+        # Try progressively more aggressive image compression; vectors stay sharp.
+        # preset controls JPEG quality: /prepress~95, /ebook~85, /screen~70
+        attempts = [
+            ("/prepress", 200),  # high quality, 200 dpi images
+            ("/ebook",    150),  # good quality, 150 dpi
+            ("/ebook",    120),
+            ("/screen",   120),
+            ("/screen",    96),
         ]
-        # Try /prepress (higher quality), then /ebook, then /screen
-        for setting in ("/prepress", "/ebook", "/screen"):
-            cmd = gs_cmd[:]
-            cmd.insert(3, f"-dPDFSETTINGS={setting}")
+        best_tmp = None
+        best_size = None
+        for preset, dpi in attempts:
             try:
-                subprocess.run(cmd, check=True)
+                _gs_image_only(preset, dpi)
+                size = os.path.getsize(tmp_path)
+                if best_size is None or size < best_size:
+                    best_size = size
+                    best_tmp = tmp_path + ".best"
+                    import shutil
+                    shutil.copy2(tmp_path, best_tmp)
+                if size <= max_bytes:
+                    print(f"Compressed (images at {dpi} dpi, preset={preset}) saved: {input_path}")
+                    os.replace(tmp_path, str(input_path))
+                    if best_tmp and os.path.exists(best_tmp):
+                        os.remove(best_tmp)
+                    return input_path
             except Exception:
                 continue
-            if os.path.getsize(tmp_path) <= max_bytes:
-                break
 
-        if os.path.getsize(tmp_path) <= max_bytes:
-            os.replace(tmp_path, str(input_path))
-            print(f"Compressed file saved: {input_path}")
-        else:
-            # keep best effort if smaller, else remove tmp
-            try:
-                final_size = os.path.getsize(tmp_path)
-                orig_size = os.path.getsize(str(input_path))
-                if final_size < orig_size:
-                    os.replace(tmp_path, str(input_path))
-                    print(f"Warning: Could not reach target size, saved smaller PDF: {input_path}")
-                else:
-                    os.remove(tmp_path)
-                    print(f"Warning: Could not compress below {max_size_mb} MB.")
-            except Exception:
-                print("Warning: Ghostscript run failed or tmp file missing.")
+        # Use best result achieved
+        src = best_tmp if (best_tmp and os.path.exists(best_tmp)) else tmp_path
+        try:
+            orig_size = os.path.getsize(str(input_path))
+            if best_size and best_size < orig_size:
+                os.replace(src, str(input_path))
+                print(f"Warning: target {max_size_mb} MB not reached; "
+                      f"saved best result ({best_size/1024/1024:.1f} MB): {input_path}")
+            else:
+                print(f"Warning: Could not compress below {max_size_mb} MB without quality loss.")
+        except Exception:
+            print("Warning: Ghostscript compression failed.")
+        for p in [tmp_path, best_tmp]:
+            if p and os.path.exists(p):
+                try:
+                    os.remove(p)
+                except Exception:
+                    pass
         return input_path
 
     else:
