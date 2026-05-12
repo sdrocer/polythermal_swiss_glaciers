@@ -18,3 +18,8 @@ new_data/
 *.pdf
 *.svg
 *.png
+
+# Allow tracked paper figures
+!/figures/
+!/figures/*.pdf
+!/figures/*.png
