@@ -1,4 +1,5 @@
 .DS_Store
+external/
 processing/__pycache__/plot_thermistor_data.cpython-312.pyc
 processing/__pycache__/read_thermistor_data.cpython-312.pyc
 products/figures/

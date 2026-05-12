@@ -452,6 +452,8 @@ def draw_gpr_line_points(
     Optionally highlight points within distance ranges per profile.
     highlight_distance_ranges: list of (profile_id, (min_dist, max_dist)) tuples.
     """
+    if gdf is None or gdf.empty:
+        return
     # Highlight by distance ranges per profile (NEW)
     if highlight_distance_ranges is not None:
         for pid, (min_dist, max_dist) in highlight_distance_ranges:
@@ -881,22 +883,22 @@ def _collect_measured_values(temp_data_dict):
 def _temperature_levels(measured, step):
     step = step if step > 0 else 0.1
     lo_edge = np.floor(measured.min()/step)*step
-    neg_bins = np.arange(lo_edge, 0.0+step, step)
-    levels = np.unique(np.append(neg_bins, step))
+    levels = np.unique(np.arange(lo_edge, 0.0 + step, step))
+    # Ensure 0.0 is the upper boundary (clip any floating-point overshoot)
+    levels = levels[levels <= 1e-9]
+    if levels.size == 0 or levels[-1] < -1e-9:
+        levels = np.append(levels, 0.0)
     return levels
 
 def _discrete_icetemp_cmap_from_levels(levels):
     n_int = len(levels) - 1
     if n_int <= 0:
-        colors = np.array(cmc.vik(1.0)).reshape(1, -1)
+        colors = np.array(cmc.vik(0.0)).reshape(1, -1)
     else:
-        if n_int > 1:
-            blue = cmc.vik(np.linspace(0.0, 0.55, n_int-1))
-            red  = np.array(cmc.vik(0.95)).reshape(1, -1)
-            colors = np.vstack([blue, red])
-        else:
-            colors = np.array(cmc.vik(1.0)).reshape(1, -1)
-    return ListedColormap(colors, name='icetemp_discrete')
+        colors = cmc.vik(np.linspace(0.0, 0.55, n_int))
+    cmap = ListedColormap(colors, name='icetemp_discrete')
+    cmap.set_over(cmc.vik(0.95))  # red extend for T > 0°C
+    return cmap
 
 def _interpolate_segment(prof_seg, borehole_coords_df, temp_data_dict, depth_dict, n_depth, n_elev, rbf_smooth):
     return interpolate_glacier_temperature_field_2d(
@@ -1156,6 +1158,9 @@ def plot_icetemp_profile(
     # Colorbar control
     cbar_min: float | None = None,
     cbar_tick_step: float | None = None,
+    show_cbar: bool = True,
+    return_mappable: bool = False,
+    base_fontsize: int = 24,
     # Panel tag
     panel_tag: str | None = None,
     panel_tag_color: str = 'red',
@@ -1179,7 +1184,7 @@ def plot_icetemp_profile(
     # Firn cover indicator (recent year — line 1, upper)
     firn_grid=None,
     firn_tfm=None,
-    firn_color: str = '#2e8b9a',
+    firn_color: str = '#3d5a80',
     firn_lw: float = 4.0,
     firn_offset: float = 2.7,
     firn_year: int | None = None,
@@ -1300,7 +1305,7 @@ def plot_icetemp_profile(
         norm = plt.Normalize(vmin=vmin, vmax=vmax)
     else:
         cmap = cmap or _discrete_icetemp_cmap_from_levels(levels)
-        norm = BoundaryNorm(levels, cmap.N, clip=True)
+        norm = BoundaryNorm(levels, cmap.N, clip=False)
 
     # Whisker uncertainty array
     unc_arr = None
@@ -1587,7 +1592,7 @@ def plot_icetemp_profile(
             print(f"[plot_icetemp_profile] Could not export borehole temperatures: {e}")
 
     # Colorbar
-    if im is not None:
+    if im is not None and show_cbar:
         if continuous_cmap:
             cb = plt.colorbar(im, ax=ax, location='bottom', orientation='horizontal',
                               fraction=0.08, pad=0.1, aspect=40, anchor=(0.5, 0.0))
@@ -1598,7 +1603,8 @@ def plot_icetemp_profile(
             lo_edge = float(levels.min())
             ticks_desc = np.arange(0.0, lo_edge - 1e-12, -step_for_ticks)
             cb = plt.colorbar(im, ax=ax, location='bottom', orientation='horizontal',
-                              fraction=0.08, pad=0.1, aspect=40, anchor=(0.5, 0.0))
+                              fraction=0.08, pad=0.1, aspect=40, anchor=(0.5, 0.0),
+                              extend='max')
             cb.set_ticks(ticks_desc)
             cb.set_ticklabels([f"{t:.{dec}f}" for t in ticks_desc])
             cb.set_label('Ice Temperature [°C]')
@@ -1618,12 +1624,14 @@ def plot_icetemp_profile(
             if any(abs(loc - x_max) <= tol for loc in bh_locs_for_limits): x_max += float(bh_edge_pad)
         ax.set_xlim(x_min, x_max)
 
-    format_plot(ax=ax, title=title, x_tick_rotation=0, legend_loc='upper left', adjust_linewidths=False, base_fontsize=24)
+    format_plot(ax=ax, title=title, x_tick_rotation=0, legend_loc='upper left', adjust_linewidths=False, base_fontsize=base_fontsize)
     h, l = ax.get_legend_handles_labels()
     uniq = {};  [uniq.setdefault(li, hi) for hi, li in zip(h, l) if li]
     ax.legend(uniq.values(), uniq.keys(), frameon=True, fancybox=False, edgecolor='black',
               framealpha=1, facecolor='white', loc='upper left', ncol=1)
     plt.tight_layout()
+    if return_mappable:
+        return fig, ax, im, norm, levels
     return fig, ax
 
 def plot_icetemp_profiles_side_by_side(
@@ -1649,6 +1657,7 @@ def plot_icetemp_profiles_side_by_side(
     panel_gap=0.18,
     cbar_min: float | None = None,
     cbar_tick_step: float | None = None,
+    cbar_pad: float = 0.18,
     bh_label_offset: float = 3.0,
     y_top_margin: float = 12.0,
     keep_true_slope: bool = True,
@@ -1670,7 +1679,32 @@ def plot_icetemp_profiles_side_by_side(
     bh_marker_size: float = 6.0,
     bh_line_lw: float = 1.2,
     # NEW: interpolation
-    rbf_smooth: float = 0.05,  # <-- ADD THIS PARAMETER
+    rbf_smooth: float = 0.05,
+    # Panel tag colours (per-panel list or single value)
+    panel_tag_colors: str | list[str] = 'black',
+    # Hatch / white-fill regions (per-panel list of [(dist_min, dist_max)] or single list)
+    hatch_regions_list=None,     # e.g. [[(245,400)], [(260,400)]]
+    hatch_pattern: str = '',
+    hatch_fill_color: str | None = 'white',
+    hatch_alpha: float = 0.8,
+    hatch_color: str = 'grey',
+    hatch_linewidth: float = 0.5,
+    # Firn cover — recent year (per-panel lists)
+    firn_grids=None,
+    firn_tfms=None,
+    firn_colors: str | list[str] = '#3d5a80',
+    firn_lws: float | list[float] = 4.0,
+    firn_offsets: float | list[float] = 2.7,
+    firn_years=None,
+    firn_zorder: int = 15,
+    # Firn cover — older year (per-panel lists)
+    firn_grids2=None,
+    firn_tfms2=None,
+    firn_colors2: str | list[str] = '#e67e22',
+    firn_lws2: float | list[float] = 4.0,
+    firn_offsets2: float | list[float] = 1.2,
+    firn_years2=None,
+    firn_zorder2: int = 14,
 ):
     """
     Side-by-side profiles with shared colorbar.
@@ -1701,6 +1735,20 @@ def plot_icetemp_profiles_side_by_side(
     label_colors_list = _as_list(label_colors_list, n_panels, None)
     bed_unc_list = _as_list(bed_uncertainty, n_panels, None)
     tag_locs_list = _as_list(tag_locs, n_panels, "TR")
+    tag_colors_list = _as_list(panel_tag_colors, n_panels, 'black')
+    hatch_list      = _as_list(hatch_regions_list, n_panels, None)
+    firn_grids_l    = _as_list(firn_grids,   n_panels, None)
+    firn_tfms_l     = _as_list(firn_tfms,    n_panels, None)
+    firn_colors_l   = _as_list(firn_colors,  n_panels, '#3d5a80')
+    firn_lws_l      = _as_list(firn_lws,     n_panels, 4.0)
+    firn_offsets_l  = _as_list(firn_offsets, n_panels, 2.7)
+    firn_years_l    = _as_list(firn_years,   n_panels, None)
+    firn_grids2_l   = _as_list(firn_grids2,  n_panels, None)
+    firn_tfms2_l    = _as_list(firn_tfms2,   n_panels, None)
+    firn_colors2_l  = _as_list(firn_colors2, n_panels, '#e67e22')
+    firn_lws2_l     = _as_list(firn_lws2,    n_panels, 4.0)
+    firn_offsets2_l = _as_list(firn_offsets2,n_panels, 1.2)
+    firn_years2_l   = _as_list(firn_years2,  n_panels, None)
 
     # Prepare profiles (flip + optional clip) and spans
     def _prepare_with_clip(profile_df, flip, buffer_m, temp_data_dict, depth_dict):
@@ -1765,7 +1813,7 @@ def plot_icetemp_profiles_side_by_side(
         all_measured = np.append(all_measured, float(cbar_min))
     levels = _temperature_levels(all_measured, temp_step)
     cmap = cmap or _discrete_icetemp_cmap_from_levels(levels)
-    norm = BoundaryNorm(levels, cmap.N, clip=True)
+    norm = BoundaryNorm(levels, cmap.N, clip=False)
 
     width_ratios = [max(sp[4]/sp[5], 1e-9) for *_, sp in prepared] if keep_true_slope else [1.0]*len(prepared)
 
@@ -1773,8 +1821,26 @@ def plot_icetemp_profiles_side_by_side(
     gs = GridSpec(1, len(prepared), figure=fig, wspace=panel_gap, width_ratios=width_ratios)
     axs = [fig.add_subplot(gs[0, i]) for i in range(len(prepared))]
 
-    def _draw_on_ax(ax, i_panel, temp_data_dict, depth_dict, label_colors, tag_text, bed_unc_panel):
+    def _draw_on_ax(ax, i_panel, temp_data_dict, depth_dict, label_colors, tag_text, bed_unc_panel,
+                    tag_color, hatch_regions, firn_grid, firn_tfm, firn_color, firn_lw, firn_offset,
+                    firn_year, firn_grid2, firn_tfm2, firn_color2, firn_lw2, firn_offset2, firn_year2):
         dist, zsurf, zbed, prof, (x_min, x_max, y_min, y_max, _, _) = prepared[i_panel]
+
+        # ── Sample firn grids at profile coordinates ──────────────────────────
+        def _sample_firn(grid, tfm):
+            if grid is None or tfm is None:
+                return None
+            if 'x' not in prof.columns or 'y' not in prof.columns:
+                return None
+            xs = prof['x'].values.astype(float); ys = prof['y'].values.astype(float)
+            nrows, ncols_g = grid.shape
+            ci = np.clip(np.round((xs - tfm.c) / tfm.a).astype(int), 0, ncols_g - 1)
+            ri = np.clip(np.round((ys - tfm.f) / tfm.e).astype(int), 0, nrows - 1)
+            vals = grid[ri, ci]
+            return np.isfinite(vals) & (vals > 0)
+
+        firn_at_dist  = _sample_firn(firn_grid,  firn_tfm)
+        firn_at_dist2 = _sample_firn(firn_grid2, firn_tfm2)
 
         # Local whisker array
         unc_arr = None
@@ -1845,6 +1911,44 @@ def plot_icetemp_profiles_side_by_side(
                                 fmt='none', ecolor=bed_unc_color, elinewidth=bed_unc_lw,
                                 capsize=bed_unc_capsize, capthick=bed_unc_lw,
                                 alpha=bed_unc_alpha, zorder=11, clip_on=False)
+
+            # ── Hatch / white-fill regions ────────────────────────────────────
+            if hatch_regions:
+                for (dist_min, dist_max) in hatch_regions:
+                    in_range = (xnodes_seg >= dist_min) & (xnodes_seg <= dist_max)
+                    if not np.any(in_range):
+                        continue
+                    x_idx = np.where(in_range)[0]
+                    shade_mask = np.zeros_like(T_masked.data, dtype=float)
+                    for j in range(x_idx.min(), x_idx.max() + 1):
+                        inside = (elevs_seg >= zb_on_x[j]) & (elevs_seg <= zs_on_x[j])
+                        shade_mask[inside, j] = 1.0
+                    shade_mask = np.ma.masked_where(shade_mask == 0, shade_mask)
+                    if hatch_fill_color is not None:
+                        ax.contourf(xnodes_seg, elevs_seg, shade_mask, levels=[0.5, 1.5],
+                                    colors=[hatch_fill_color],
+                                    alpha=hatch_alpha if hatch_alpha > 0 else 0.5,
+                                    zorder=11, antialiased=True)
+                    if hatch_pattern and hatch_pattern.strip():
+                        ax.contourf(xnodes_seg, elevs_seg, shade_mask, levels=[0.5, 1.5],
+                                    colors='none', hatches=[hatch_pattern],
+                                    alpha=hatch_alpha, zorder=12,
+                                    edgecolors=hatch_color, linewidths=hatch_linewidth)
+
+            # ── Firn cover lines ──────────────────────────────────────────────
+            for f_at_dist, f_color, f_lw, f_offset, f_year, f_zorder in [
+                (firn_at_dist,  firn_color,  firn_lw,  firn_offset,  firn_year,  firn_zorder),
+                (firn_at_dist2, firn_color2, firn_lw2, firn_offset2, firn_year2, firn_zorder2),
+            ]:
+                if f_at_dist is not None:
+                    f_seg = f_at_dist[i0:i1]
+                    if f_seg.any():
+                        fx = np.ma.masked_where(~f_seg, seg_dist)
+                        fz = np.ma.masked_where(~f_seg, zs_seg + f_offset)
+                        f_lbl = (f'Firn cover ({f_year})' if f_year is not None else 'Firn cover') if first_seg else None
+                        ax.plot(fx, fz, color=f_color, lw=f_lw,
+                                solid_capstyle='round', zorder=f_zorder, label=f_lbl)
+
             first_seg = False
 
         # Boreholes
@@ -1908,15 +2012,23 @@ def plot_icetemp_profiles_side_by_side(
 
         # Panel tag (inside with offset and translucent box)
         if tag_text:
-            _draw_panel_tag(ax, tag_text, loc=tag_locs_list[i_panel],
-                            bbox=tag_bbox, tag_kwargs=tag_kwargs, pad_pt=8)
+            _draw_panel_tag(ax, tag_text, color=tag_color, loc=tag_locs_list[i_panel],
+                            bbox=tag_bbox, tag_kwargs=tag_kwargs, pad_pt=8, fontsize=16)
 
         format_plot(ax=ax, title=None, x_tick_rotation=0, legend_loc='upper left', adjust_linewidths=False)
         if i_panel != 0 and ax.get_legend() is not None:
             ax.get_legend().remove()
 
     for i, (ax, (prof_df, tdict, ddict), lbl_colors, tag) in enumerate(zip(axs, profiles, label_colors_list, panel_tags)):
-        _draw_on_ax(ax, i, tdict, ddict, lbl_colors, tag, bed_unc_list[i])
+        _draw_on_ax(ax, i, tdict, ddict, lbl_colors, tag, bed_unc_list[i],
+                    tag_color=tag_colors_list[i],
+                    hatch_regions=hatch_list[i],
+                    firn_grid=firn_grids_l[i],   firn_tfm=firn_tfms_l[i],
+                    firn_color=firn_colors_l[i],  firn_lw=firn_lws_l[i],
+                    firn_offset=firn_offsets_l[i],firn_year=firn_years_l[i],
+                    firn_grid2=firn_grids2_l[i],  firn_tfm2=firn_tfms2_l[i],
+                    firn_color2=firn_colors2_l[i], firn_lw2=firn_lws2_l[i],
+                    firn_offset2=firn_offsets2_l[i],firn_year2=firn_years2_l[i])
 
     sm = ScalarMappable(norm=norm, cmap=cmap); sm.set_array([])
     lo_edge = float(levels.min())
@@ -1924,7 +2036,8 @@ def plot_icetemp_profiles_side_by_side(
     dec = _decimals(step_for_ticks)
     ticks_desc = np.arange(0.0, lo_edge - 1e-12, -step_for_ticks)
     cb = fig.colorbar(sm, ax=axs, location='bottom', orientation='horizontal',
-                      fraction=0.08, pad=0.1, aspect=40, anchor=(0.5, 0.0))
+                      fraction=0.08, pad=cbar_pad, aspect=40, anchor=(0.5, 0.0),
+                      extend='max')
     cb.set_ticks(ticks_desc)
     cb.set_ticklabels([f"{t:.{dec}f}" for t in ticks_desc])
     cb.set_label('Ice Temperature [°C]')

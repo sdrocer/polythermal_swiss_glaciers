@@ -547,7 +547,10 @@ class ThermistorDataPlotter:
         annotation_arrow_hide_dy: float = 0.06,
         annotation_dx_pts: int = 6,
         annotation_positions=None,
-        annotation_fontsize: int | None = None
+        annotation_fontsize: int | None = None,
+        equil_days: float = 0,
+        show_depth_legend: bool = False,
+        depth_legend_loc: str = "upper right",
     ):
         import numpy as np
         import pandas as pd
@@ -591,6 +594,8 @@ class ThermistorDataPlotter:
         def _plot_sensor_with_failure(ax, times, temps, color, lw, label=None, fail_idx=None):
             temps = np.array(temps)
             times = np.array(times)
+            if fail_idx is not None and fail_idx <= 0:
+                return  # sensor marked as completely failed, skip entirely
             if fail_idx is None:
                 fail_idx = len(temps)
             # Plot solid up to missing data
@@ -649,10 +654,13 @@ class ThermistorDataPlotter:
                 df_["TIME"] = pd.to_datetime(df_["TIME"])
                 df_.sort_values("TIME", inplace=True)
 
+        _suppress_bh2_black = False  # flag to also hide from depth legend
+
         # Custom failure indices for Corvatsch (CV) glacier
         if borehole_labels and "CV2TT" in borehole_labels:
-            fail_idx_black_2 = 18    # manually set the failure index for black probe
+            fail_idx_black_2 = 0     # 9.3 m sensor failed — suppress entirely
             fail_idx_white_2 = 1250  # manually set the failure index for white probe
+            _suppress_bh2_black = True
 
         if borehole_labels and "GT2TT" in borehole_labels:
             fail_idx_black_2 = 1300    # manually set the failure index for black probe
@@ -705,7 +713,7 @@ class ThermistorDataPlotter:
                 i_w1, i_b1 = initial_depths
 
         # Style
-        lw = 3
+        lw = 3.5
         def _alpha_for_depth(d, dmin, dmax):
             rng = max(dmax - dmin, 1e-6)
             return 0.4 + 0.6 * ((d - dmin) / rng)
@@ -862,12 +870,63 @@ class ThermistorDataPlotter:
         ax.xaxis.set_major_formatter(mdates.ConciseDateFormatter(locator))
         ax.tick_params(axis='x', labelbottom=bool(show_xticklabels))
 
+        # Clip x-axis start to skip the equilibration phase
+        if equil_days and float(equil_days) > 0 and deployment_date is not None and pd.notna(deployment_date):
+            ax.set_xlim(left=deployment_date + pd.Timedelta(days=float(equil_days)))
+
         # Deployment marker & label on every panel
         if deployment_date is not None and pd.notna(deployment_date):
             fs = max(10, int(base_fontsize * 0.75))
             ax.axvline(deployment_date, color='gray', linestyle='solid', linewidth=2, alpha=0.9, zorder=0)
             ax.text(deployment_date, ax.get_ylim()[0], 'Deployment', color='gray',
                     fontsize=fs, va='top', ha='right', rotation=45, alpha=0.9)
+
+        # In-panel depth legend: init -> final depth per sensor
+        if show_depth_legend:
+            _ha  = "right" if "right" in depth_legend_loc else "left"
+            _va  = "top"   if "upper" in depth_legend_loc else "bottom"
+            _ax_x = 0.98 if "right" in depth_legend_loc else 0.02
+            _ax_y = 0.98 if "upper" in depth_legend_loc else 0.02
+            _fs_leg = max(7, (annotation_fontsize or int(base_fontsize * 0.45)) - 1)
+
+            _entries = []
+            if i_w1 is not None or i_b1 is not None:
+                _entries.append((color_bh1, borehole_labels[0],
+                                 i_w1, i_b1,
+                                 depths[0] if len(depths) >= 1 else None,
+                                 depths[1] if len(depths) >= 2 else None))
+            if len(depths) == 4 and (i_w2 is not None or i_b2 is not None):
+                _entries.append((color_bh2, borehole_labels[1],
+                                 i_w2, i_b2, depths[2], depths[3]))
+
+            # Build full text for background box (invisible text sets bbox size)
+            _full_lines = []
+            for _clr, _lbl, _iw, _ib, _dw, _db in _entries:
+                _full_lines.append(_lbl)
+                if _iw is not None and _dw is not None:
+                    _full_lines.append(f"  \u25cb {_iw:.1f}\u2192{_dw:.1f} m")
+                if _ib is not None and _db is not None:
+                    _full_lines.append(f"  \u25cf {_ib:.1f}\u2192{_db:.1f} m")
+            _box_txt = ax.text(_ax_x, _ax_y, "\n".join(_full_lines),
+                               transform=ax.transAxes, ha=_ha, va=_va,
+                               fontsize=_fs_leg, color="none",
+                               bbox=dict(boxstyle="round,pad=0.35", fc="white", ec="0.6", alpha=0.9, lw=0.8),
+                               zorder=19)
+
+            # Draw each entry in the matching line color on top
+            _sign = -1 if "upper" in depth_legend_loc else 1
+            _line_frac = _fs_leg * 1.55 / (ax.get_position().height * fig.get_size_inches()[1] * 72)
+            _cur_y = _ax_y
+            for _ei, (_clr, _lbl, _iw, _ib, _dw, _db) in enumerate(_entries):
+                _rows = [_lbl]
+                if _iw is not None and _dw is not None:
+                    _rows.append(f"  \u25cb {_iw:.1f}\u2192{_dw:.1f} m")
+                if _ib is not None and _db is not None and _show_black(_ei):
+                    _rows.append(f"  \u25cf {_ib:.1f}\u2192{_db:.1f} m")
+                ax.text(_ax_x, _cur_y, "\n".join(_rows),
+                        transform=ax.transAxes, ha=_ha, va=_va,
+                        fontsize=_fs_leg, color=_clr, zorder=20)
+                _cur_y += _sign * _line_frac * (len(_rows) + 0.4)
 
         # Styling
         try:

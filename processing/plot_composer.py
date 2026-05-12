@@ -885,7 +885,10 @@ def build_tyntag_timeseries_two_row(
     xlabel_y: float = 0.012,
     wspace: float = 0.12,
     hspace: float = 0.25,
-    exclude_sensors: dict | None = None
+    exclude_sensors: dict | None = None,
+    equil_days: float = 0,
+    show_depth_legend: bool = False,
+    depth_legend_loc: str = "upper right",
 ):
     """
     Create a 2-row × 3-column grid of TinyTag timeseries plots.
@@ -969,6 +972,9 @@ def build_tyntag_timeseries_two_row(
                 annotation_dx_pts=annotation_dx_pts,
                 annotation_positions=ann_pos_panel,
                 annotation_fontsize=annotation_fontsize,
+                equil_days=equil_days,
+                show_depth_legend=show_depth_legend,
+                depth_legend_loc=depth_legend_loc,
             )
 
             # Only leftmost column shows y-axis label
@@ -1309,6 +1315,57 @@ def hide_edge_map_labels(ax, margin_frac=0.02):
 abbr = {"Alphubel": "AH", "Chessjen": "CJ", "Hohsaas": "HS", "Sex Rouge": "SR", "Tortin": "GT", "Corvatsch": "CV"}
 rect_colors = {"AH": "#1f77b4", "CJ": "#2ca02c", "HS": "#ff7f0e", "SR": "#d62728", "GT": "#9467bd", "CT": "#8c564b"}
 
+
+def add_switzerland_inset(ax, overview_extent, inset_position=(0.65, 0.02, 0.35, 0.35),
+                          buffer_km=40, ch_color='#d0d0d0', box_color='red', box_lw=1.5):
+    """
+    Add a small Switzerland locator inset to an existing axes.
+
+    Parameters
+    ----------
+    ax : matplotlib.axes.Axes
+        Parent axes to attach the inset to.
+    overview_extent : tuple
+        (minx, maxx, miny, maxy) of the region shown in the parent axes (LV95).
+    inset_position : tuple
+        (left, bottom, width, height) in axes-fraction coordinates.
+    buffer_km : float
+        Buffer in km added around Switzerland for the inset extent.
+    ch_color : str
+        Fill colour for the Switzerland outline.
+    box_color : str
+        Colour of the rectangle marking the overview extent.
+    box_lw : float
+        Line width of the overview rectangle.
+    """
+    import geopandas as gpd
+
+    # Switzerland outline from naturalearth (included with geopandas)
+    world = gpd.read_file(gpd.datasets.get_path('naturalearth_lowres'))
+    ch = world[world['name'] == 'Switzerland'].to_crs(epsg=2056)
+
+    # Create inset axes
+    ax_in = ax.inset_axes(inset_position)
+    ch.plot(ax=ax_in, color=ch_color, edgecolor='black', linewidth=0.6)
+
+    # Draw red rectangle showing the overview extent
+    minx, maxx, miny, maxy = overview_extent
+    rect = plt.Rectangle((minx, miny), maxx - minx, maxy - miny,
+                          linewidth=box_lw, edgecolor=box_color,
+                          facecolor='none', zorder=5)
+    ax_in.add_patch(rect)
+
+    # Set extent with buffer
+    buf = buffer_km * 1000
+    ch_bounds = ch.total_bounds  # (minx, miny, maxx, maxy)
+    ax_in.set_xlim(ch_bounds[0] - buf, ch_bounds[2] + buf)
+    ax_in.set_ylim(ch_bounds[1] - buf, ch_bounds[3] + buf)
+    ax_in.set_aspect('equal')
+    ax_in.axis('off')
+
+    return ax_in
+
+
 def draw_glacier_map(
     ax, ortho_path, bbox, gdf_pts, dem_tiles, boreholes, title,
     ANNO_FONTSIZE, ABBR_FONTSIZE,
@@ -1327,6 +1384,7 @@ def draw_glacier_map(
     show_bedrock_depth: bool = False,  # NEW ARGUMENT
     gdf_pts_2: gpd.GeoDataFrame | None = None,
     show_contours: bool = True,
+    show_reference_annotations: bool = True,
     show_flow_arrow: bool = True,
     flow_arrow_angle_deg: float | None = None,   # override computed direction (0=east, 90=north)
     flow_arrow_pos_offset: tuple | None = None,  # (dx, dy) in map units to shift arrow start
@@ -1570,7 +1628,7 @@ def draw_glacier_map(
         gprp.draw_gpr_line_points(ax, gdf_pts_2, size=3, color='darkorange', alpha=1.0, zorder=8)
 
     # If highlight_ids provided, draw them on top explicitly (robust regardless of gprp implementation)
-    if highlight_ids is not None:
+    if highlight_ids is not None and gdf_pts is not None:
         if isinstance(highlight_ids, (int, np.integer)):
             hids = [int(highlight_ids)]
         else:
@@ -1685,6 +1743,7 @@ def draw_glacier_map(
                     ("Alphubel",  "AH3TT"): ('right', 'bottom', -2,  2),
                     ("Alphubel",  "AH2TT"): ('left',  'top',     2, -2),
                     ("Alphubel",  "AH1TT"): ('left',  'top',     2, -2),
+                    ("Alphubel",  "AH3G"):  ('right', 'bottom', -2,  2),
                 }
                 _pos = _bh_label_pos.get((title, bh_name))
                 if _pos:
@@ -1727,7 +1786,23 @@ def draw_glacier_map(
                     offset_dist = 80  # meters in map units
                     
                     # Glacier-specific positioning rules
-                    if title == "Chessjen":
+                    if title == "Alphubel":
+                        _ah_angles = {
+                            "AH3G": (150, 'right',  'bottom'),  # upper-left
+                            "AH1G": (150, 'right',  'center'),  # left
+                            "AH2G": (250, 'right',  'top'),     # south-west
+                        }
+                        if bh_name in _ah_angles:
+                            _ang, ha, va = _ah_angles[bh_name]
+                            angle = np.radians(_ang)
+                            anno_x = bh_x + offset_dist * np.cos(angle)
+                            anno_y = bh_y + offset_dist * np.sin(angle)
+                        else:
+                            anno_x = bh_x + (offset_dist if dx_from_center > 0 else -offset_dist)
+                            anno_y = bh_y
+                            ha = 'left' if dx_from_center > 0 else 'right'
+                            va = 'center'
+                    elif title == "Chessjen":
                         # For Chessjen, use diagonal positioning for both bedrock boreholes
                         if bh_name == "CJ1G":
                             # Place CJ1G at 45° angle (upper-right)
@@ -1781,7 +1856,7 @@ def draw_glacier_map(
     # --- Previously measured borehole reference annotations ------------------
     # Sex Rouge: "Fischer (2018)" with lines to SR1TT and SR2TT
     # Corvatsch: "Haeberli et al. (2004)" with line to CV2TT
-    if (boreholes is not None) and (not boreholes.empty):
+    if show_reference_annotations and (boreholes is not None) and (not boreholes.empty):
         _ref_targets = {}
         if title == "Sex Rouge":
             _ref_targets["Fischer (2018)"] = {"SR1TT", "SR2TT"}
