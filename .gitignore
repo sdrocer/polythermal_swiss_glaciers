@@ -1,19 +1,21 @@
 .DS_Store
-external/
+*.pyc
+src/__pycache__/
+calibration/__pycache__/
+
+# Untracked data and results
+data/
+results/
 archive/
-processing/__pycache__/plot_thermistor_data.cpython-312.pyc
-processing/__pycache__/read_thermistor_data.cpython-312.pyc
 products/figures/
 products/text/
-processing/__pycache__/process_thermistor_data.cpython-312.pyc
-maps/
+
+# Calibration support files
 calibration/Technical questions Gemini data loggers and Probes.docx
 calibration/Technical questions Gemini data loggers and Probes.pdf
 calibration/photos/
-*.pyc
-new_data/calibration/corrected_chain_offsets.csv
-data/sgi_2022/
-new_data/
+
+# Common output formats (gitignored everywhere except figures/)
 *.csv
 *.pdf
 *.svg
