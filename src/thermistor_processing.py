@@ -9,9 +9,11 @@ from scipy.interpolate import Rbf
 from pykrige.ok import OrdinaryKriging
 
 import os
+import sys as _sys
 _here = os.path.dirname(os.path.abspath(__file__))
 _project_root = os.path.abspath(os.path.join(_here, '..'))
-os.chdir(_project_root)
+if _project_root not in _sys.path:
+    _sys.path.insert(0, _project_root)
 from calibration.thermistor_calibration import *
 
 """
