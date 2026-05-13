@@ -16,6 +16,12 @@ with the cold-temperate transition surface at depths of 17-38 m and ice temperat
 
 ---
 
+### License
+
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
+---
+
 ### Built with
 
 ![Python](https://img.shields.io/badge/Python-3776AB?style=for-the-badge&logo=python&logoColor=white)
