@@ -28,7 +28,7 @@ from src.geodata_download import (
     _points_to_gdf
 )
 
-from processing import gpr_plotting as gprp
+from src import gpr_plotting as gprp
 from src.geodata_processing import *
 
 def plot_switzerland_glacier_overview(
