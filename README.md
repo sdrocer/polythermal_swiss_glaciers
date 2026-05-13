@@ -1,8 +1,13 @@
 ## Polythermal conditions in small glaciers in the Swiss Alps
 #### Check out the paper here:
 
+---
+
 ### How to cite
 
+*Citation will be added once the paper is available as a preprint or is published.*
+
+---
 
 ### Abstract (short summary)
 Englacial temperature measurements in the Alps remain sparse and biased toward high-elevation accumulation areas, leaving the thermal state of ablation zones poorly constrained. 
@@ -13,3 +18,25 @@ transitioning into fully or partially cold-based glacier termini. Ground-penetra
 scattering in temperate zones. The observed thermal structures are closely linked to the history of firn cover loss, reconstructed from long-term mass balance records, with sites that lost their firn cover earliest 
 showing the most advanced cooling. Our findings suggest that polythermal conditions among small Alpine glaciers may be more widespread than previously recognised, with important implications for glacial hazard assessments 
 and highlighting the need for systematic regional-scale thermal observations and modelling.
+
+---
+
+### Contact
+
+<table>
+  <tr>
+    <td><img src="assets/profilbild.jpeg" width="110" style="border-radius:50%"/></td>
+    <td style="padding-left:16px">
+      <b>Janosch Beer</b><br>
+      Laboratory of Hydraulics, Hydrology and Glaciology (VAW), ETH Zurich, Zurich, Switzerland<br>
+      Swiss Federal Institute for Forest, Snow and Landscape Research (WSL), bâtiment ALPOLE, Sion, Switzerland<br><br>
+      📧 janoschbeer6@gmail.com<br><br>
+      <a href="https://www.linkedin.com/in/janosch-beer-531472206/">
+        <img src="https://img.shields.io/badge/LinkedIn-0077B5?style=for-the-badge&logo=linkedin&logoColor=white" alt="LinkedIn"/>
+      </a>&nbsp;
+      <a href="https://www.researchgate.net/profile/Janosch-Beer?ev=hdr_xprf">
+        <img src="https://img.shields.io/badge/ResearchGate-00CCBB?style=for-the-badge&logo=ResearchGate&logoColor=white" alt="ResearchGate"/>
+      </a>
+    </td>
+  </tr>
+</table>
