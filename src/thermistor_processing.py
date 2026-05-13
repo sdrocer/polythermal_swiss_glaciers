@@ -13,7 +13,6 @@ _here = os.path.dirname(os.path.abspath(__file__))
 _project_root = os.path.abspath(os.path.join(_here, '..'))
 os.chdir(_project_root)
 from calibration.thermistor_calibration import *
-import calibration.thermistor_chains_icebath_references
 
 """
     Processing utilities for thermistor data.
