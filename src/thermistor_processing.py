@@ -9,7 +9,9 @@ from scipy.interpolate import Rbf
 from pykrige.ok import OrdinaryKriging
 
 import os
-os.chdir('/Users/janoschbeer/Library/Mobile Documents/com~apple~CloudDocs/PhD/projects/polythermal_swiss_glaciers/')
+_here = os.path.dirname(os.path.abspath(__file__))
+_project_root = os.path.abspath(os.path.join(_here, '..'))
+os.chdir(_project_root)
 from calibration.thermistor_calibration import *
 import calibration.thermistor_chains_icebath_references
 

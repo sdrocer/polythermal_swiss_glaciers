@@ -21,7 +21,7 @@ def compute_and_save_offsets(
     plots_dir: str | Path | None = None
 ) -> pd.DataFrame:
     # Lazy import to avoid circulars at module import time
-    from processing.thermistor_plotting import ThermistorDataPlotter
+    from src.thermistor_plotting import ThermistorDataPlotter
 
     rows = []
     plots_path = Path(plots_dir) if plots_dir else None
