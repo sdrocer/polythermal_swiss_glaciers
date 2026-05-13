@@ -11,7 +11,7 @@ import cmcrameri.cm as cmc
 from scipy.ndimage import gaussian_filter  # used in heatmap smoothing
 
 # Import processing pieces (works with or without package context)
-from processing.thermistor_processing import *
+from src.thermistor_processing import *
 
 # -----------------------------------------------------------------------------
 # ThermistorDataPlotter and other plotting helpers
@@ -1569,7 +1569,7 @@ def plot_chain_temperature_heatmap(
         cb.set_ticklabels([f"{t:.1f}" for t in cold_ticks] + [r"≈T$_{pmp}$"])
 
     try:
-        from processing.gpr_plotting import format_plot
+        from src.gpr_plotting import format_plot
     except Exception:
         try:
             from .gpr_plotting import format_plot
@@ -2427,7 +2427,7 @@ def plot_ntc_temperature_heatmap(
     cb.ax.set_yticklabels([f"{lv:.1f}" for lv in levels])
 
     try:
-        from processing.gpr_plotting import format_plot
+        from src.gpr_plotting import format_plot
         format_plot(ax=ax, title=title, legend_loc='upper right', x_tick_rotation=0, y_tick_rotation=0, cbar=cb)
     except Exception:
         if title:

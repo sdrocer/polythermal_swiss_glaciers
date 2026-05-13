@@ -21,7 +21,7 @@ from typing import Union, Sequence
 import subprocess
 
 # Import required geodata helpers (centralized in download_geodata.py)
-from processing.geodata_download import (
+from src.geodata_download import (
     SWISS_CRS,
     download_swisstopo_wms,
     _load_vector,
@@ -29,7 +29,7 @@ from processing.geodata_download import (
 )
 
 from processing import gpr_plotting as gprp
-from processing.geodata_processing import *
+from src.geodata_processing import *
 
 def plot_switzerland_glacier_overview(
     *,
@@ -729,7 +729,7 @@ def build_tyntag_timeseries_one_row(
     import matplotlib.pyplot as plt
     from matplotlib.gridspec import GridSpec
     from matplotlib.lines import Line2D
-    from processing.thermistor_plotting import build_profile_color_map
+    from src.thermistor_plotting import build_profile_color_map
 
     fig = plt.figure(figsize=figsize, dpi=dpi)
     gs = GridSpec(nrows=1, ncols=3, figure=fig, wspace=wspace, hspace=0.0)
@@ -897,7 +897,7 @@ def build_tyntag_timeseries_two_row(
     from matplotlib.gridspec import GridSpec
     from matplotlib.lines import Line2D
     from matplotlib.ticker import MaxNLocator  # <-- NEW IMPORT
-    from processing.thermistor_plotting import build_profile_color_map
+    from src.thermistor_plotting import build_profile_color_map
 
     fig = plt.figure(figsize=figsize, dpi=dpi)
     gs = GridSpec(nrows=2, ncols=3, figure=fig, wspace=wspace, hspace=hspace)

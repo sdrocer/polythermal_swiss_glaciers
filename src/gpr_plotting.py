@@ -13,7 +13,7 @@ from matplotlib.cm import ScalarMappable
 from scipy.ndimage import gaussian_filter1d
 
 # ice temperature processing
-from processing.thermistor_processing import (
+from src.thermistor_processing import (
     melting_point_at_pressure,
     interpolate_glacier_temperature_field_2d
 )
