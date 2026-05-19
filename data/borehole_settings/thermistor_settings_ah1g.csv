@@ -1,0 +1,20 @@
+AH1G,distance (cm),cum distance (cm),distance till bottom (cm),approx. Measurement depth (m),measurement depth 082025 [m]
+#1,1800,1800,2700,8,18
+#2,300,2100,2400,11,21
+#3,300,2400,2100,14,24
+#4,300,2700,1800,17,27
+#5,300,3000,1500,20,30
+#6,300,3300,1200,23,33
+#7,300,3600,900,26,36
+#8,300,3900,600,29,39
+#9,300,4200,300,32,42
+#10,300,4500,0,35,45
+total length,4500,,,,
+ice thickness gpr,3500,,,,
+Logger,A551FE,,,,
+,,,,,
+date,06/08/2025,,,,
+ice thickness (measured),5060,,,,
+,,,,,
+notes,String too short for borehole by 560 cm,,,,
+shortage,560,,,,

@@ -1,0 +1,16 @@
+﻿HL5TT,distance (cm), depth 08082025 (m),depth 27092025 (m),
+white probe,1200,12.0,9.6,
+black probe,1700,17.0,14.6,
+total length,1700,,,
+Logger,#14,,,
+,,,,
+date,cummulative melt (m ice),borehole depth (m),depth black probe (m),depth white probe (m)
+08/08/2024,0,20.0,17.0,12.0
+29/09/2024,-0.85387132,19.1,16.1,11.1
+13/08/2025,-1.47219193,18.5,15.5,10.5
+27/09/2025,-2.350054526,17.6,14.6,9.6
+,,,,
+,,,,
+,,,,
+,,,,
+*former BH5,,,,

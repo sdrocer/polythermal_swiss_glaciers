@@ -1,0 +1,12 @@
+﻿CJ2G,distance (cm),cum distance (cm),distance till bottom (cm),approx. depth (m),depth 08082025 (m)
+#1,1500,1500,1000,3,7
+#2,250,1750,750,5.5,9.5
+#3,250,2000,500,8,12
+#4,250,2250,250,10.5,14.5
+#5,250,2500,0,13,17
+total length,2500,,,,
+ice thickness gpr,1300,,,,
+Logger,A55202,,,,
+,,,,,
+date,08/08/2025,,,,
+ice thickness (measured),1700,,,,

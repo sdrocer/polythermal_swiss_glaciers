@@ -1,0 +1,15 @@
+CH5TT,distance (cm),depth 090824 (m),depth 290924 (m), depth 08082025 (m)
+white probe,1200,6.8,5.475027263,3.85561614
+black probe,1700,11.8,10.47502726,8.85561614
+total length,1700,,,
+Logger,#14,,,
+,,,,
+date,cummulative melt (m ice),borehole depth (m),depth black probe (m),depth white probe (m)
+09/08/2024,0,11.8,11.8,6.8
+29/09/2024,-1.324972737,10.47502726,10.47502726,5.475027263
+08/08/2025,-1.619411123,8.85561614,8.85561614,3.85561614
+,,,,
+,,,,
+,,,,
+,,,,
+*previous borehole 7,,,,

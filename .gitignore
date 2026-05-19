@@ -6,8 +6,8 @@ src/config.py
 src/__pycache__/
 calibration/__pycache__/
 
-# Untracked data and results
-data/
+# Untracked data and results (ignore contents, not the directory itself)
+data/*
 results/
 archive/
 products/figures/
@@ -34,3 +34,11 @@ calibration/photos/
 !/assets/*.png
 !/assets/*.jpeg
 !/assets/*.jpg
+
+# Allow small metadata files bundled with the repo (MUST come after *.csv rule)
+!data/borehole_settings/
+!data/borehole_settings/*.csv
+!data/glamos/
+!data/glamos/mass_balance_cumulative_*.csv
+!data/calibration/
+!data/calibration/corrected_chain_offsets.csv

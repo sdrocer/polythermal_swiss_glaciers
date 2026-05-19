@@ -1,0 +1,13 @@
+AH4TT,distance (cm),depth 060825 (m),depth 160925 (m),
+white probe,1200,10,9.754634678,
+black probe,1700,15,14.75463468,
+total length,1700,,,
+Logger,,,,
+,,,,
+date,cummulative melt (m ice),borehole depth [m],depth black probe [m],depth white probe [m]
+06/08/2025,0,15,15,10
+16/09/2025,-0.245365322,14.75463468,14.75463468,9.754634678
+,,,,
+,,,,
+,,,,
+*new tynitag borehole in Alphubel centerline,,,,

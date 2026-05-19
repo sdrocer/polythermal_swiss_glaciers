@@ -1,0 +1,12 @@
+﻿HL2,distance (cm),cum distance (cm),distance till bottom (cm),approx. depth (m),depth 13082025 (m)
+#1,1000,1000,2000,3,1.5
+#2,500,1500,1500,8,6.5
+#3,500,2000,1000,13,11.5
+#4,500,2500,500,18,16.5
+#5,500,3000,0,23,21.5
+total length,3000,,,,
+ice thickness gpr,2300,,,,
+Logger,A55203,,,,
+,,,,,
+date,13/08/2025,,,,
+ice thickness (measured),2150,,,,

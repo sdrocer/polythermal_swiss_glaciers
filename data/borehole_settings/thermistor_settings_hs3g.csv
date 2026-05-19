@@ -1,0 +1,12 @@
+﻿HL3,distance (cm),cum distance (cm),distance till bottom (cm),approx. depth (m),depth 13082025 (m)
+#1,1400,1400,2600,2,0.2
+#2,650,2050,1950,8.5,2
+#3,650,2700,1300,15,8.5
+#4,650,3350,650,21.5,15
+#5,650,4000,0,28,21.5
+total length,4000,,,,
+ice thickness gpr,2800,,,,
+Logger,A55200,,,,
+,,,,,
+date,13/08/2025,,,,
+ice thickness (measured),2150,,,,
