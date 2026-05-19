@@ -40,5 +40,8 @@ calibration/photos/
 !data/borehole_settings/*.csv
 !data/glamos/
 !data/glamos/mass_balance_cumulative_*.csv
+!data/glamos/distributed_mass_balance_grids/
+!data/glamos/distributed_mass_balance_grids/**
+!data/glamos/distributed_mass_balance_grids/**/*.grid
 !data/calibration/
 !data/calibration/corrected_chain_offsets.csv
