@@ -25,7 +25,8 @@ with the cold-temperate transition surface at depths of 17-38 m and ice temperat
 Overview and detailed maps of the six glaciers investigated in this study. (a) Location of study sites with cantonal boundaries and
 glacierized area according to the Swiss Glacier Inventory 2023 (SGI2023) (Huss et al., 2025). (b-g) Alphubel (AH), Chessjen (CJ), Hohsaas
 (HS), Sex Rouge (SR), Tortin (GT), and Corvatsch (CV), showing field installations on orthophotos (Swisstopo, 2023b) with contour lines
-(Swisstopo, 2023a) and SGI2023 glacier outlines.
+(Swisstopo, 2023a) and SGI2023 glacier outlines. Boreholes are distinguished by the type of thermistor string (see legend) and labeled profiles 
+indicate transects used for temperature interpolation (L4, L47, L1, L2). 
 
 ---
 
