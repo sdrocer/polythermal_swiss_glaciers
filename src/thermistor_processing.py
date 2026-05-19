@@ -1609,6 +1609,26 @@ def compute_tynitag_zaa_batch(
             })
     return out
 
+
+def summarize_zaa_by_glacier(metrics_zaa):
+    """
+    Summarise per-borehole ZAA results from compute_tynitag_zaa_batch by glacier.
+
+    Returns a DataFrame with one row per glacier and columns:
+    glacier, zaa_mean, zaa_range (max - min across boreholes).
+    """
+    rows = [{"glacier": m["glacier"], "zaa_depth": m["zaa_depth"]} for m in metrics_zaa]
+    bh_df = pd.DataFrame(rows)
+    summary = (
+        bh_df.groupby("glacier")["zaa_depth"]
+        .agg(zaa_mean="mean", zaa_min="min", zaa_max="max")
+        .assign(zaa_range=lambda d: d["zaa_max"] - d["zaa_min"])
+        .drop(columns=["zaa_min", "zaa_max"])
+        .reset_index()
+    )
+    return summary
+
+
 def compute_tynitag_phase_shift(
     df,
     depth_white,
