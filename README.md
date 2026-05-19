@@ -1,4 +1,5 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Version](https://img.shields.io/badge/version-v1.0.0--alpha-blue.svg)](https://github.com/sdrocer/polythermal_swiss_glaciers/releases/tag/v1.0.0-alpha)
 
 ## Polythermal conditions in small glaciers in the Swiss Alps
 #### Check out the paper here: *Visible here as soon as the paper is available as a preprint or is published*
