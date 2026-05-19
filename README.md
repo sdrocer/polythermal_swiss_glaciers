@@ -16,6 +16,16 @@ with the cold-temperate transition surface at depths of 17-38 m and ice temperat
 
 ---
 
+### Data Availability
+
+[![glenglat](https://img.shields.io/badge/Borehole_Thermometry-glenglat-4A90D9?style=for-the-badge&logo=github&logoColor=white)](https://github.com/mjacqu/glenglat)
+[![Radar Data](https://img.shields.io/badge/Radar_Data-ETH_Research_Collection-E37222?style=for-the-badge&logo=databricks&logoColor=white)](https://doi.org/10.3929/ethz-c-000799146)
+
+Borehole temperature records are archived in the [Global Englacial Temperature Database (glenglat)](https://github.com/mjacqu/glenglat).
+Ground-penetrating radar data are available in the [ETH Research Collection](https://doi.org/10.3929/ethz-c-000799146).
+
+---
+
 ### License
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
