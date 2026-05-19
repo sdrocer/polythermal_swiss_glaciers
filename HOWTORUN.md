@@ -18,13 +18,24 @@ conda activate polythermal_swiss_glaciers
 
 The raw borehole temperature and GPR data are not included in this repository. Download them from the sources listed in the [Data Availability](README.md#data-availability) section of the README and place them in a local directory of your choice.
 
-## 4. Set the data path
+## 4. Configure your data paths
 
-At the top of each notebook, set the `DATA_ROOT` variable to point to your local data directory:
+Copy the path configuration template and edit it to match your local directory layout:
+
+```bash
+cp src/config_template.py src/config.py
+```
+
+Then open `src/config.py` and set the four path variables:
 
 ```python
-DATA_ROOT = "/path/to/your/data"
+ICETEMP_ROOT = "/path/to/fieldwork_data/THERMAP_2024_2025/icetemperature_data"
+GPR_ROOT     = "/path/to/fieldwork_data/THERMAP_2024_2025/gpr"
+RGI_ROOT     = "/path/to/data/RGI"
+GLENGLAT_DB  = "/path/to/data/ice_temperature/glenglat_database"
 ```
+
+`config.py` is gitignored — your personal paths will never be committed to the repository.
 
 ## 5. Run the notebooks in order
 
