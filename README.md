@@ -18,6 +18,12 @@ with the cold-temperate transition surface at depths of 17-38 m and ice temperat
 
 ---
 
+### Study Sites
+
+![Field site overview map](figures/fig01_field_sites_overview_map.png)
+
+---
+
 ### Data Availability
 
 | Data type | Repository |
