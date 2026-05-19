@@ -26,6 +26,12 @@ Ground-penetrating radar data are available in the [ETH Research Collection](htt
 
 ---
 
+### How to run
+
+See [HOWTORUN.md](HOWTORUN.md) for setup instructions, environment configuration, and notebook execution order.
+
+---
+
 ### License
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
