@@ -6,7 +6,7 @@ authors:
   - family-names: Beer
     given-names: Janosch
     orcid: https://orcid.org/0000-0000-0000-0000  # update with your ORCID
-    affiliation: "Laboratory of Hydraulics, Hydrology and Glaciology (VAW), ETH Zurich"
+    affiliation: "Laboratory of Hydraulics, Hydrology and Glaciology (VAW), ETH Zurich; Swiss Federal Institute for Forest, Snow and Landscape Research (WSL), bâtiment ALPOLE, Sion, Switzerland"
 repository-code: https://github.com/sdrocer/polythermal_swiss_glaciers
 license: MIT
 # ── Update the fields below once the paper is published ─────────────────────
