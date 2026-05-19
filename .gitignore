@@ -28,3 +28,9 @@ calibration/photos/
 !/figures/
 !/figures/*.pdf
 !/figures/*.png
+
+# Allow assets (profile photo, overview map for README)
+!/assets/
+!/assets/*.png
+!/assets/*.jpeg
+!/assets/*.jpg
