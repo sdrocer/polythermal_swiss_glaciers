@@ -1,3 +1,5 @@
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
 ## Polythermal conditions in small glaciers in the Swiss Alps
 #### Check out the paper here: *Visible here as soon as the paper is available as a preprint or is published*
 
@@ -18,21 +20,16 @@ with the cold-temperate transition surface at depths of 17-38 m and ice temperat
 
 ### Data Availability
 
-Borehole temperature records are archived in the [Global Englacial Temperature Database (glenglat)](https://github.com/mjacqu/glenglat).
-
-Ground-penetrating radar data are available in the [ETH Research Collection](https://doi.org/10.3929/ethz-c-000799146).
+| Data type | Repository |
+|---|---|
+| Borehole thermometry | [![glenglat](https://img.shields.io/badge/glenglat-4A90D9?style=for-the-badge&logo=github&logoColor=white)](https://github.com/mjacqu/glenglat) |
+| Ground-penetrating radar | [![ETH Research Collection](https://img.shields.io/badge/ETH_Research_Collection-E37222?style=for-the-badge&logo=databricks&logoColor=white)](https://doi.org/10.3929/ethz-c-000799146) |
 
 ---
 
 ### How to run
 
 See [HOWTORUN.md](HOWTORUN.md) for setup instructions, environment configuration, and notebook execution order.
-
----
-
-### License
-
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 ---
 
