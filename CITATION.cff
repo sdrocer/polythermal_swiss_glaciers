@@ -9,6 +9,7 @@ authors:
     affiliation: "Laboratory of Hydraulics, Hydrology and Glaciology (VAW), ETH Zurich; Swiss Federal Institute for Forest, Snow and Landscape Research (WSL), bâtiment ALPOLE, Sion, Switzerland"
 repository-code: https://github.com/sdrocer/polythermal_swiss_glaciers
 license: MIT
+date-released: "2026-05-19"
 # ── Update the fields below once the paper is published ─────────────────────
 # doi: 10.XXXX/XXXXXX
 # preferred-citation:
