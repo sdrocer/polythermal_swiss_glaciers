@@ -1261,7 +1261,7 @@ def plot_cropped_map_with_grid(
     else:
         fig = ax.figure
 
-    ax.imshow(arr_cropped, extent=new_extent, origin="upper")
+    ax.imshow(arr_cropped, extent=new_extent, origin="upper", interpolation="antialiased")
     ax.set_xlim(new_extent[0], new_extent[1])
     ax.set_ylim(new_extent[2], new_extent[3])
     ax.set_aspect('equal')
