@@ -10,14 +10,33 @@ authors:
 repository-code: https://github.com/sdrocer/polythermal_swiss_glaciers
 license: MIT
 date-released: "2026-05-19"
-# ── Update the fields below once the paper is published ─────────────────────
-# doi: 10.XXXX/XXXXXX
-# preferred-citation:
-#   type: article
-#   title: "Polythermal conditions in small glaciers in the Swiss Alps"
-#   authors:
-#     - family-names: Beer
-#       given-names: Janosch
-#   journal: "Journal Name"
-#   year: 2026
-#   doi: 10.XXXX/XXXXXX
+preferred-citation:
+  type: article
+  title: "Polythermal conditions in small glaciers in the Swiss Alps"
+  authors:
+    - family-names: Beer
+      given-names: Janosch
+    - family-names: Jacquemart
+      given-names: Mylène
+    - family-names: Huss
+      given-names: Matthias
+    - family-names: Santin
+      given-names: Ilaria
+    - family-names: Racz
+      given-names: Gabriela Clara
+    - family-names: Ogier
+      given-names: Christophe
+    - family-names: Gindraux
+      given-names: Saskia
+    - family-names: Hösli
+      given-names: Leo
+    - family-names: Moser
+      given-names: Raphael
+    - family-names: Irving
+      given-names: James
+    - family-names: Farinotti
+      given-names: Daniel
+  journal: "EGUsphere"
+  year: 2026
+  doi: 10.5194/egusphere-2026-3042
+  notes: "Preprint, currently under review."

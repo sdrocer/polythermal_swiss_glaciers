@@ -1,14 +1,15 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Version](https://img.shields.io/badge/version-v1.0.0--alpha-blue.svg)](https://github.com/sdrocer/polythermal_swiss_glaciers/releases/tag/v1.0.0-alpha)
+[![EGUsphere Preprint](https://img.shields.io/badge/Preprint-EGUsphere-orange.svg)](https://doi.org/10.5194/egusphere-2026-3042)
 
 ## Polythermal conditions in small glaciers in the Swiss Alps
-#### Check out the paper here: *Visible here as soon as the paper is available as a preprint or is published*
+#### Check out the preprint here: [egusphere-2026-3042](https://egusphere.copernicus.org/preprints/2026/egusphere-2026-3042/)
 
 ---
 
 ### How to cite
 
-*Citation will be added once the paper is available as a preprint or is published.*
+Beer, J., Jacquemart, M., Huss, M., Santin, I., Racz, G. C., Ogier, C., Gindraux, S., Hösli, L., Moser, R., Irving, J., and Farinotti, D.: Polythermal conditions in small glaciers in the Swiss Alps, EGUsphere [preprint], https://doi.org/10.5194/egusphere-2026-3042, 2026.
 
 ---
 
