@@ -66,7 +66,9 @@ def imshow_hillshade(ax, dem_tiles, plot_extent=None, merge_bbox=None, cmap='gra
         miny = maxy + out_trans.e * h
         extent = (minx, maxx, miny, maxy)
 
-    img = ax.imshow(hs, cmap=cmap, extent=extent, origin='upper', alpha=blend_alpha, vmin=0, vmax=1)
+    img = ax.imshow(hs, cmap=cmap, extent=extent, origin='upper', alpha=blend_alpha,
+                     vmin=vmin if vmin is not None else 0,
+                     vmax=vmax if vmax is not None else 1)
     return img
 
 def add_panel_outline(ax, bbox, color='black', linewidth=2):
