@@ -55,3 +55,6 @@ calibration/photos/
 !results/firn_grids/**
 !results/firn_grids/**/*.grid
 !results/firn_grids/**/*.csv
+!data/firn_validation/
+!data/firn_validation/manual_firnlines/
+!data/firn_validation/manual_firnlines/*.geojson

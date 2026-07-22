@@ -17,6 +17,7 @@ dependencies:
   - cmcrameri=1.9
   - ipykernel=6.29
   - ipython=9.0
+  - ipympl=0.9
   - requests=2.32
   - pip
   - pip:

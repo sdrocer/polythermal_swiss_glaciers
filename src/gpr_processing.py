@@ -630,6 +630,76 @@ def download_swisstopo_orthophoto(
 
     return out_tif, transform, rasterio.crs.CRS.from_epsg(crs_epsg)
 
+def download_swisstopo_orthophoto_timetravel(
+    bbox, out_tif, year, crs_epsg=2056, pixel_size=0.5,
+    layer="ch.swisstopo.swissimage-product", fmt="image/jpeg",
+    max_px=8000, timeout=60
+):
+    """
+    Download a single-year SWISSIMAGE "Zeitreise" (time-travel) orthophoto via WMS.
+
+    Same as download_swisstopo_orthophoto() but queries the time-enabled
+    historical mosaic (layer='ch.swisstopo.swissimage-product', available
+    1946-present) using the WMS TIME dimension. For tiles not reflown in the
+    requested year, swisstopo serves the most recent prior flight for that
+    tile, so the true acquisition year can differ slightly from `year`
+    (usually by 1-2 years given the ~3-yearly cantonal flight cycle) -
+    verify visually rather than trusting `year` as an exact acquisition date.
+
+    - bbox: (xmin, ymin, xmax, ymax) in EPSG:crs_epsg
+    - year: int, requested TIME value (e.g. 2019)
+    Returns (out_tif, transform, crs)
+    """
+    import requests
+    from PIL import Image
+
+    xmin, ymin, xmax, ymax = map(float, bbox)
+    dx = max(xmax - xmin, 1e-6)
+    dy = max(ymax - ymin, 1e-6)
+    width = int(np.clip(np.ceil(dx / pixel_size), 1, max_px))
+    height = int(np.clip(np.ceil(dy / pixel_size), 1, max_px))
+
+    params = {
+        "SERVICE": "WMS",
+        "REQUEST": "GetMap",
+        "VERSION": "1.3.0",
+        "LAYERS": layer,
+        "STYLES": "",
+        "CRS": f"EPSG:{crs_epsg}",
+        "BBOX": f"{xmin},{ymin},{xmax},{ymax}",
+        "WIDTH": str(width),
+        "HEIGHT": str(height),
+        "FORMAT": fmt,
+        "TRANSPARENT": "FALSE",
+        "TIME": str(int(year)),
+        "DPI": "96",
+    }
+    url = "https://wms.geo.admin.ch/"
+    resp = requests.get(url, params=params, timeout=timeout, headers={"User-Agent": "asses_swiss_gl_therm_regimes/0.1"})
+    resp.raise_for_status()
+
+    img = Image.open(BytesIO(resp.content)).convert("RGB")
+    arr = np.asarray(img)  # H, W, 3
+
+    xres = dx / arr.shape[1]
+    yres = dy / arr.shape[0]
+    transform = from_origin(xmin, ymax, xres, yres)
+
+    profile = {
+        "driver": "GTiff",
+        "height": arr.shape[0],
+        "width": arr.shape[1],
+        "count": 3,
+        "dtype": "uint8",
+        "transform": transform,
+        "crs": f"EPSG:{crs_epsg}",
+    }
+    with rasterio.open(out_tif, "w", **profile) as dst:
+        for b in range(3):
+            dst.write(arr[:, :, b], b + 1)
+
+    return out_tif, transform, rasterio.crs.CRS.from_epsg(crs_epsg)
+
 def load_borehole_positions(path, epsg=2056, keep_names=None, case_insensitive=True):
     """
     Read borehole CSV and return (GeoDataFrame, missing_list).

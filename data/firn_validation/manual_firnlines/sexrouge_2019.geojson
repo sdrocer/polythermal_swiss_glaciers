@@ -1,0 +1,8 @@
+{
+"type": "FeatureCollection",
+"name": "sexrouge_2019",
+"crs": { "type": "name", "properties": { "name": "urn:ogc:def:crs:EPSG::2056" } },
+"features": [
+{ "type": "Feature", "properties": { }, "geometry": { "type": "Polygon", "coordinates": [ [ [ 2582922.795356627553701, 1130682.57465977827087 ], [ 2582936.505034047178924, 1130679.832724294392392 ], [ 2582937.876001788768917, 1130693.542401713784784 ], [ 2582922.795356627553701, 1130682.57465977827087 ] ] ] } }
+]
+}

@@ -51,3 +51,4 @@ The notebooks are numbered and should be run sequentially, as later notebooks de
 | `6_englacial_profiles_and_metrics.ipynb` | Interpolated 2D profiles and thermistor metrics |
 | `7_firn_and_mass_balance.ipynb` | Firn change and mass balance figures |
 | `8_glenglat.ipynb` | glenglat database analysis and data submission |
+| `9_firn_validation.ipynb` | Firn map validation against historical orthophotos (figS12-S13) |
