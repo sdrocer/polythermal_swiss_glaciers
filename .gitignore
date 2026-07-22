@@ -24,10 +24,16 @@ calibration/photos/
 *.svg
 *.png
 
-# Allow tracked paper figures
+# Allow tracked paper figures (paper/ = fig01-10 in main text, supplement/ = figS01-S17)
 !/figures/
 !/figures/*.pdf
 !/figures/*.png
+!/figures/paper/
+!/figures/paper/*.pdf
+!/figures/paper/*.png
+!/figures/supplement/
+!/figures/supplement/*.pdf
+!/figures/supplement/*.png
 
 # Allow assets (profile photo, overview map for README)
 !/assets/
