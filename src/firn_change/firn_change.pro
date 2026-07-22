@@ -128,11 +128,11 @@ CONNECT_SERVER, dir, dirout
 
 glacier=['corvatsch','felskinn','hohsaas','tortin','sexrouge','alphubel']
 
-tran=[1970,2026]  ; time range to be evaluated
+tran=[1970,2025]  ; time range to be evaluated
 
 time_firn=20    ; years for firn accumulation to become ice - not entirely sure how to set that
 
-yrout=[1980,1990,2000,2010,2014,2019,2022,2024,2026]   ; arbitrary years for outputting firn thickness distribution 
+yrout=[1980,1990,2000,2010,2014,2019,2022,2024,2025]   ; arbitrary years for outputting firn thickness distribution
 
 ; ----------------------------------
 
@@ -173,22 +173,14 @@ for i=0,len-1 do begin
    ii=where(b gt 0,ci)   ; accumulation in that year
    jj=where(b le 0 and b ne noval and firn gt 0,cj)  ; ablation over firn area in that year 
 
-   ; simple assessment - just cumulating accumulation
+   ; simple cumulative tracker - kept only as a fast-path trigger for the
+   ; layer-removal search below; the age-aware firntot (computed further
+   ; down) is what defines firn extent/thickness/duration in the outputs
    firnlast=firn
    if ci gt 0 then firn(ii)=firn(ii)+b(ii)
    if cj gt 0 then firn(jj)=firn(jj)+b(jj)
    kk=where(glacier_mask eq 0,ck) & if ck gt 0 then firn(kk)=noval
    kk=where(firn lt 0 and firn gt -100,ck) & firn(kk)=0
-
-   ; track firn duration and detect disappearance (minimum 2-year criterion)
-   ll=where(firnlast gt 0 and firnlast ne noval and firn eq 0, cl)
-   if cl gt 0 then begin
-      valid=where(firn_duration(ll) ge 2, cvalid)
-      if cvalid gt 0 then year_firn_lost(ll(valid))=tran(0)+i
-      firn_duration(ll)=0
-   endif
-   mm=where(firn gt 0 and firn ne noval, cm)
-   if cm gt 0 then firn_duration(mm)=firn_duration(mm)+1
 
    ; detailed assessment - tracking annual accumulation layers and storing age
    c=dblarr(nc,nr)+noval & d=c & e=c
@@ -222,15 +214,31 @@ ii=where(ageacc lt i+tran(0)-time_firn and ageacc ne noval,ci)
 if ci gt 0 then firnyear(ii)=0
 if ci gt 0 then ageacc(ii)=noval
 
-; compute current firn thickness at every cell
+; compute current firn thickness at every cell (age- and ablation-aware
+; total; this is the quantity that actually implements the >20yr -> ice rule)
+prevtot=dblarr(nc,nr)
+if i gt 0 then for cc=0,nc-1 do for rr=0,nr-1 do prevtot(cc,rr)=firntot(i-1,cc,rr)
 for cc=0,nc-1 do begin
    for rr=0,nr-1 do begin
       if firn(cc,rr) ge 0 then begin ; only for cells on glacier
          a=firnyear(0:i,cc,rr) & ii=where(a ne noval,ci)
-         if ci gt 0 then firntot(i,cc,rr)=total(a(ii))       
+         if ci gt 0 then firntot(i,cc,rr)=total(a(ii))
       endif
    endfor
 endfor
+curtot=dblarr(nc,nr) & for cc=0,nc-1 do for rr=0,nr-1 do curtot(cc,rr)=firntot(i,cc,rr)
+
+; track firn duration and detect disappearance (minimum 2-year criterion),
+; keyed on the age-aware total so firn that ages into ice (>20 yr) counts
+; as "lost" here too, consistent with the firn{yr}_*.grid snapshots
+ll=where(prevtot gt 0 and curtot le 0, cl)
+if cl gt 0 then begin
+   valid=where(firn_duration(ll) ge 2, cvalid)
+   if cvalid gt 0 then year_firn_lost(ll(valid))=tran(0)+i
+   firn_duration(ll)=0
+endif
+mm=where(curtot gt 0, cm)
+if cm gt 0 then firn_duration(mm)=firn_duration(mm)+1
 
 ; record firn cell count for this year (only cells with >= 2 consecutive years of firn)
 ii=where(firn_duration ge 2,ci) & firn_area_ts(i)=ci
@@ -247,12 +255,17 @@ close, 9
 ; -----------------------
 ; finalize evaluation, write out grids
 
+; age- and ablation-aware final firn state (same definition as the last
+; firn{yr}_*.grid snapshot) - this is what "current firn" means from here on
+firn_final=dblarr(nc,nr) & for cc=0,nc-1 do for rr=0,nr-1 do firn_final(cc,rr)=firntot(len-1,cc,rr)
+kk=where(glacier_mask eq 0,ck) & if ck gt 0 then firn_final(kk)=noval
+
 ; compute avg age of firn
-ii=where(firn gt 0,ci)    
+ii=where(firn_final gt 0,ci)
 if ci gt 0 then begin
    for cc=0,nc-1 do begin
       for rr=0,nr-1 do begin
-         if firn(cc,rr) gt 0 then begin
+         if firn_final(cc,rr) gt 0 then begin
             a=ageacc(*,cc,rr) & kk=where(a ne noval,ck)
             if ck gt 0 then begin
                a(kk)=tran(1)-a(kk) & age(cc,rr)=mean(a(kk))
@@ -263,7 +276,7 @@ if ci gt 0 then begin
 endif
 
 ; compute time since firn disappeared (for cells where firn is now gone)
-ll=where(year_firn_lost ne noval and firn eq 0, cl)
+ll=where(year_firn_lost ne noval and firn_final le 0, cl)
 if cl gt 0 then time_since_firn(ll)=tran(1)-year_firn_lost(ll)
 
 ; evaluate total firn thickness throughout time
@@ -276,7 +289,7 @@ for i=0,n_elements(yrout)-1 do begin
 endfor
 
 
-WRITE_AGR,dirout+'firnthick_'+glacier(g)+'.grid',firn,header=head
+WRITE_AGR,dirout+'firnthick_'+glacier(g)+'.grid',firn_final,header=head
 WRITE_AGR,dirout+'firnage_'+glacier(g)+'.grid',age,header=head
 WRITE_AGR,dirout+'time_since_firn_'+glacier(g)+'.grid',time_since_firn,header=head
 
@@ -284,7 +297,7 @@ WRITE_AGR,dirout+'time_since_firn_'+glacier(g)+'.grid',time_since_firn,header=he
 ; write out statistcs
 print, '**********************'
 print, glacier(g)
-ii=where(firn gt 0,ci) & jj=where(firn ge 0,cj)
+ii=where(firn_final gt 0,ci) & jj=where(firn_final ge 0,cj)
 print, 'Firn cover (%): '+string(ci*100./cj,fo='(i3)')
 ii=where(age ge 0,ci)
 if ci gt 0 then print, 'Avg age of firn (yr): '+string(mean(age(ii)),fo='(f5.1)')

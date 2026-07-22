@@ -8,7 +8,7 @@ calibration/__pycache__/
 
 # Untracked data and results (ignore contents, not the directory itself)
 data/*
-results/
+results/*
 archive/
 products/figures/
 products/text/
@@ -45,3 +45,7 @@ calibration/photos/
 !data/glamos/distributed_mass_balance_grids/**/*.grid
 !data/calibration/
 !data/calibration/corrected_chain_offsets.csv
+!results/firn_grids/
+!results/firn_grids/**
+!results/firn_grids/**/*.grid
+!results/firn_grids/**/*.csv
