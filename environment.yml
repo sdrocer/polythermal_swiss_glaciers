@@ -22,3 +22,4 @@ dependencies:
   - pip
   - pip:
     - frictionless==5.19.0
+    - nbstripout==0.9.1
