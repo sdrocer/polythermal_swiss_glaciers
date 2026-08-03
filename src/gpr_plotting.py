@@ -1601,14 +1601,13 @@ def plot_icetemp_profile(
             step_for_ticks = float(cbar_tick_step) if cbar_tick_step else float(temp_step)
             dec = _decimals(step_for_ticks)
             lo_edge = float(levels.min())
-            ticks_desc = np.arange(0.0, lo_edge - 1e-12, -step_for_ticks)
+            ticks_asc = np.arange(lo_edge, 0.0 + 1e-12, step_for_ticks)
             cb = plt.colorbar(im, ax=ax, location='bottom', orientation='horizontal',
                               fraction=0.08, pad=0.1, aspect=40, anchor=(0.5, 0.0),
                               extend='max')
-            cb.set_ticks(ticks_desc)
-            cb.set_ticklabels([f"{t:.{dec}f}" for t in ticks_desc])
+            cb.set_ticks(ticks_asc)
+            cb.set_ticklabels([f"{t:.{dec}f}" for t in ticks_asc])
             cb.set_label('Ice Temperature [°C]')
-            cb.ax.invert_xaxis()
 
     if panel_tag:
         _draw_panel_tag(ax, panel_tag, color=panel_tag_color, loc=tag_loc, bbox=tag_bbox, tag_kwargs=tag_kwargs, pad_pt=8, fontsize=16)
@@ -2034,13 +2033,12 @@ def plot_icetemp_profiles_side_by_side(
     lo_edge = float(levels.min())
     step_for_ticks = float(cbar_tick_step) if cbar_tick_step else float(temp_step)
     dec = _decimals(step_for_ticks)
-    ticks_desc = np.arange(0.0, lo_edge - 1e-12, -step_for_ticks)
+    ticks_asc = np.arange(lo_edge, 0.0 + 1e-12, step_for_ticks)
     cb = fig.colorbar(sm, ax=axs, location='bottom', orientation='horizontal',
                       fraction=0.08, pad=cbar_pad, aspect=40, anchor=(0.5, 0.0),
                       extend='max')
-    cb.set_ticks(ticks_desc)
-    cb.set_ticklabels([f"{t:.{dec}f}" for t in ticks_desc])
+    cb.set_ticks(ticks_asc)
+    cb.set_ticklabels([f"{t:.{dec}f}" for t in ticks_asc])
     cb.set_label('Ice Temperature [°C]')
-    cb.ax.invert_xaxis()
 
     return fig, axs
