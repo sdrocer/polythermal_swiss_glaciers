@@ -2194,10 +2194,28 @@ def compress_figure_inplace(input_path, max_size_mb=5):
             subprocess.run(cmd, check=True)
 
         # Try progressively more aggressive image compression; vectors stay sharp.
-        # preset controls JPEG quality: /prepress~95, /ebook~85, /screen~70
+        # preset controls JPEG quality: /prepress~95, /ebook~85, /screen~70.
+        # Radargram panels are dense, noise-like textures, so JPEG quality
+        # matters as much as resolution for how "pixely" they look. Step DPI
+        # down within /prepress (best JPEG quality) across several rungs
+        # before ever dropping preset -- previously the ladder jumped straight
+        # from /prepress@200 to /ebook@150, i.e. lower resolution *and* lower
+        # quality at once, which is why fitting the size budget meant landing
+        # on a noticeably degraded image even when well under budget.
         attempts = [
-            ("/prepress", 200),  # high quality, 200 dpi images
-            ("/ebook",    150),  # good quality, 150 dpi
+            ("/prepress", 300),  # native resolution for most sources, best quality
+            ("/prepress", 200),
+            # 195: Ghostscript stops actually downsampling once the requested
+            # resolution reaches the image's native embedded resolution (for
+            # these radargram sources that's ~200dpi), at which point it keeps
+            # the raster essentially as-is instead of JPEG-recompressing it --
+            # a step change from ~1.7MB to 3.5MB+ with no visible quality gain.
+            # 195 sits just under that cliff: effectively native detail, still
+            # JPEG-compressed.
+            ("/prepress", 195),
+            ("/prepress", 150),
+            ("/prepress", 120),
+            ("/ebook",    150),  # fall back to lower quality only if still too big
             ("/ebook",    120),
             ("/screen",   120),
             ("/screen",    96),

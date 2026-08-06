@@ -256,8 +256,7 @@ class ThermistorDataPlotter:
         # Colors
         color_map = build_profile_color_map(labels)
         _ncols = max(total_series, 1)
-        _positions = np.linspace(0.05, 0.75, _ncols)
-        fallback_colors = [cmc.romaO(float(p)) for p in _positions]
+        fallback_colors = [QUALITATIVE_BH_COLORS[i % len(QUALITATIVE_BH_COLORS)] for i in range(_ncols)]
 
         # Common excludes
         exclude_cols = {'NO', 'TIME', 'TEMP LOGGER', 'TEMP BATTERY', 'HK-BAT:V'}
@@ -433,7 +432,10 @@ class ThermistorDataPlotter:
         ax.invert_yaxis()
         ax.set_xlabel('Ice Temperature [°C]')
         ax.set_ylabel('Depth [m]')
-        ax.axvline(x=0, color='k', linestyle='--')
+        _xmin, _xmax = ax.get_xlim()
+        if _xmax > 0:
+            ax.axvspan(0, _xmax, color='lightgrey', alpha=0.4, zorder=0)
+            ax.set_xlim(_xmin, _xmax)
 
         # Apply custom x-tick step if provided
         if xtick_step is not None:
@@ -2485,13 +2487,17 @@ def _disperse_positions(k: int, start: float, end: float, reserved: list[float])
         out = (out + fill)[:k]
     return out
 
+# Qualitative palette (ColorBrewer Dark2) for distinguishing boreholes within a site;
+# swapped in for romaO after reviewer feedback that adjacent boreholes weren't distinct enough,
+# then iterated Set3 -> Set1 -> Dark2 per follow-up feedback rounds.
+QUALITATIVE_BH_COLORS = ["#1b9e77", "#d95f02", "#7570b3", "#e7298a", "#66a61e", "#e6ab02"]
+
 def build_profile_color_map(labels):
     """
-    Categorical color mapping from cmcrameri 'romaO' (cyclic, perceptually uniform).
-    Sampled evenly across [0.05, 0.75] to get muted but distinct hues.
+    Categorical color mapping from a fixed qualitative palette, assigned in label order.
     """
     labs = [str(l) for l in (list(labels or []))]
     if not labs:
         return {}
-    positions = np.linspace(0.05, 0.75, len(labs))
-    return {lab: cmc.romaO(float(pos)) for lab, pos in zip(labs, positions)}
+    n = len(QUALITATIVE_BH_COLORS)
+    return {lab: QUALITATIVE_BH_COLORS[i % n] for i, lab in enumerate(labs)}

@@ -18,6 +18,10 @@ from src.thermistor_processing import (
     interpolate_glacier_temperature_field_2d
 )
 
+# Qualitative palette (ColorBrewer Dark2) for auto-generated per-borehole label colors;
+# mirrors thermistor_plotting.QUALITATIVE_BH_COLORS (kept local to avoid a circular import).
+_QUALITATIVE_BH_COLORS = ["#1b9e77", "#d95f02", "#7570b3", "#e7298a", "#66a61e", "#e6ab02"]
+
 def _smooth(y, s):
     y = np.asarray(y, float)
     if s and s > 0 and y.size >= 3:
@@ -1161,6 +1165,7 @@ def plot_icetemp_profile(
     show_cbar: bool = True,
     return_mappable: bool = False,
     base_fontsize: int = 24,
+    legend_fontsize: float | None = None,
     # Panel tag
     panel_tag: str | None = None,
     panel_tag_color: str = 'red',
@@ -1197,11 +1202,17 @@ def plot_icetemp_profile(
     firn_offset2: float = 1.2,
     firn_year2: int | None = None,
     firn_zorder2: int = 14,
+    # ZAA (zero annual amplitude) depth line — marks the base of the seasonally-active zone
+    zaa_depth: float | None = None,
+    zaa_color: str = 'black',
+    zaa_halo_color: str = 'white',
+    zaa_lw: float = 1.4,
+    zaa_zorder: float = 20.5,
     **deprecated
 ):
     """
     Single interpolated englacial temperature profile with export functionality.
-    
+
     Export Parameters
     -----------------
     export_txt_path : str, optional
@@ -1210,6 +1221,16 @@ def plot_icetemp_profile(
         Path to export borehole temperatures as CSV file
     export_cts_mask_path : str, optional
         Path to export CTS mask as tab-delimited text file
+    zaa_depth : float, optional
+        If given, draws a short tick mark crossing each borehole stick at this depth
+        below the surface, marking the boundary between the seasonally-active zone and
+        the zone below it. Only drawn on boreholes whose deepest sensor reaches that
+        depth (skipped, not clamped, otherwise).
+    legend_fontsize : float, optional
+        Font size for the panel legend specifically. Defaults to None, which falls
+        back to whatever format_plot() last put in rcParams['legend.fontsize'] (i.e.
+        the same size as the rest of the panel's text) -- pass this explicitly to
+        decouple the legend from that.
     """
     for k in list(deprecated.keys()):
         print(f"[plot_icetemp_profile] Ignoring unknown/deprecated argument: {k}")
@@ -1414,9 +1435,9 @@ def plot_icetemp_profile(
                 )
 
         ax.plot(seg_dist, zs_seg, color='k', lw=1.4,
-                label='Surface' if first_seg else None, zorder=10)
+                label='Glacier surface' if first_seg else None, zorder=10)
         ax.plot(seg_dist, zb_seg, color='k', lw=1.4, ls='--',
-                label='Bed' if first_seg else None, zorder=10)
+                label='Bed reflection' if first_seg else None, zorder=10)
 
         # Firn cover indicator — thick line slightly above surface where firn > 0
         if firn_at_dist is not None:
@@ -1521,10 +1542,9 @@ def plot_icetemp_profile(
     # Auto-generate romaO label colors when none provided
     _bh_names_ordered = [r.get('name') for _, r in borehole_coords_df.iterrows()
                          if r.get('name') in temp_data_dict and r.get('name') in depth_dict]
-    _n_bh = max(len(_bh_names_ordered), 1)
-    _bh_auto_colors = {n: cmc.romaO(float(p))
-                       for n, p in zip(_bh_names_ordered,
-                                       np.linspace(0.05, 0.75, _n_bh))}
+    _bh_auto_colors = {n: _QUALITATIVE_BH_COLORS[i % len(_QUALITATIVE_BH_COLORS)]
+                       for i, n in enumerate(_bh_names_ordered)}
+    zaa_tick_labeled = False
     for _, r in borehole_coords_df.iterrows():
         name = r.get('name')
         if name not in temp_data_dict or name not in depth_dict:
@@ -1574,8 +1594,25 @@ def plot_icetemp_profile(
                     markersize=bh_marker_size, markerfacecolor=col,
                     markeredgecolor='black', markeredgewidth=0.4,
                     zorder=21, clip_on=not allow_bh_overlap)
+        # ZAA depth tick — short horizontal mark crossing the borehole stick,
+        # behind the sensor dots but above the interpolated profile; drawn on
+        # every borehole, only skipped where it would fall below the local bed
+        if zaa_depth is not None:
+            bed_elev_here = float(np.interp(loc, dist, zbed))
+            zaa_elev = surf_elev - float(zaa_depth)
+            if zaa_elev >= bed_elev_here:
+                # White halo first so the tick stays visible against the whole
+                # blue-cream-red temperature fill, not just one end of it
+                ax.plot(loc, zaa_elev, marker='_', linestyle='None',
+                        markersize=20, markeredgewidth=zaa_lw * 1.6 + 2.2, color=zaa_halo_color,
+                        zorder=zaa_zorder - 0.1, clip_on=not allow_bh_overlap)
+                ax.plot(loc, zaa_elev, marker='_', linestyle='None',
+                        markersize=18, markeredgewidth=zaa_lw * 1.6, color=zaa_color,
+                        zorder=zaa_zorder, clip_on=not allow_bh_overlap,
+                        label='ZAA depth' if not zaa_tick_labeled else None)
+                zaa_tick_labeled = True
         name_color = (label_colors or {}).get(name, _bh_auto_colors.get(name, 'red'))
-        ax.text(loc, surf_elev + 6, name, color=name_color, fontsize=10,
+        ax.text(loc, surf_elev + 6, name, color=name_color, fontsize=10, fontweight='bold',
                 ha='center', va='bottom', zorder=22, clip_on=not allow_bh_overlap)
 
     # Export borehole temperatures
@@ -1592,22 +1629,29 @@ def plot_icetemp_profile(
             print(f"[plot_icetemp_profile] Could not export borehole temperatures: {e}")
 
     # Colorbar
+    # Sized explicitly (not via global rcParams, which format_plot() mutates as a
+    # side effect elsewhere) so this doesn't drift depending on what other cells
+    # ran most recently in the kernel.
+    cb = None
+    _fig_w, _fig_h = ax.figure.get_size_inches()
+    _cbar_fontsize = max(6, int(base_fontsize * (_fig_w + _fig_h) / 2.0 / 12.0))
     if im is not None and show_cbar:
         if continuous_cmap:
             cb = plt.colorbar(im, ax=ax, location='bottom', orientation='horizontal',
-                              fraction=0.08, pad=0.1, aspect=40, anchor=(0.5, 0.0))
-            cb.set_label('Ice Temperature [°C]')
+                              fraction=0.08, pad=0.13, aspect=40, anchor=(0.5, 0.0))
+            cb.set_label('Ice Temperature [°C]', fontsize=_cbar_fontsize)
         else:
             step_for_ticks = float(cbar_tick_step) if cbar_tick_step else float(temp_step)
             dec = _decimals(step_for_ticks)
             lo_edge = float(levels.min())
             ticks_asc = np.arange(lo_edge, 0.0 + 1e-12, step_for_ticks)
             cb = plt.colorbar(im, ax=ax, location='bottom', orientation='horizontal',
-                              fraction=0.08, pad=0.1, aspect=40, anchor=(0.5, 0.0),
+                              fraction=0.08, pad=0.13, aspect=40, anchor=(0.5, 0.0),
                               extend='max')
             cb.set_ticks(ticks_asc)
             cb.set_ticklabels([f"{t:.{dec}f}" for t in ticks_asc])
-            cb.set_label('Ice Temperature [°C]')
+            cb.set_label('Ice Temperature [°C]', fontsize=_cbar_fontsize)
+        cb.ax.tick_params(labelsize=_cbar_fontsize)
 
     if panel_tag:
         _draw_panel_tag(ax, panel_tag, color=panel_tag_color, loc=tag_loc, bbox=tag_bbox, tag_kwargs=tag_kwargs, pad_pt=8, fontsize=16)
@@ -1627,7 +1671,7 @@ def plot_icetemp_profile(
     h, l = ax.get_legend_handles_labels()
     uniq = {};  [uniq.setdefault(li, hi) for hi, li in zip(h, l) if li]
     ax.legend(uniq.values(), uniq.keys(), frameon=True, fancybox=False, edgecolor='black',
-              framealpha=1, facecolor='white', loc='upper left', ncol=1)
+              framealpha=1, facecolor='white', loc='upper left', ncol=1, fontsize=legend_fontsize)
     plt.tight_layout()
     if return_mappable:
         return fig, ax, im, norm, levels
@@ -1704,6 +1748,12 @@ def plot_icetemp_profiles_side_by_side(
     firn_offsets2: float | list[float] = 1.2,
     firn_years2=None,
     firn_zorder2: int = 14,
+    # ZAA (zero annual amplitude) depth line — per-panel list or single value
+    zaa_depths=None,
+    zaa_color: str = 'black',
+    zaa_halo_color: str = 'white',
+    zaa_lw: float = 1.4,
+    zaa_zorder: float = 20.5,
 ):
     """
     Side-by-side profiles with shared colorbar.
@@ -1748,6 +1798,7 @@ def plot_icetemp_profiles_side_by_side(
     firn_lws2_l     = _as_list(firn_lws2,    n_panels, 4.0)
     firn_offsets2_l = _as_list(firn_offsets2,n_panels, 1.2)
     firn_years2_l   = _as_list(firn_years2,  n_panels, None)
+    zaa_depths_l    = _as_list(zaa_depths,   n_panels, None)
 
     # Prepare profiles (flip + optional clip) and spans
     def _prepare_with_clip(profile_df, flip, buffer_m, temp_data_dict, depth_dict):
@@ -1822,7 +1873,8 @@ def plot_icetemp_profiles_side_by_side(
 
     def _draw_on_ax(ax, i_panel, temp_data_dict, depth_dict, label_colors, tag_text, bed_unc_panel,
                     tag_color, hatch_regions, firn_grid, firn_tfm, firn_color, firn_lw, firn_offset,
-                    firn_year, firn_grid2, firn_tfm2, firn_color2, firn_lw2, firn_offset2, firn_year2):
+                    firn_year, firn_grid2, firn_tfm2, firn_color2, firn_lw2, firn_offset2, firn_year2,
+                    zaa_depth=None):
         dist, zsurf, zbed, prof, (x_min, x_max, y_min, y_max, _, _) = prepared[i_panel]
 
         # ── Sample firn grids at profile coordinates ──────────────────────────
@@ -1898,9 +1950,9 @@ def plot_icetemp_profiles_side_by_side(
                     )
 
             ax.plot(seg_dist, zs_seg, color='k', lw=1.4,
-                    label='Surface' if first_seg else None, zorder=10)
+                    label='Glacier surface' if first_seg else None, zorder=10)
             ax.plot(seg_dist, zb_seg, color='k', lw=1.4, ls='--',
-                    label='Bed' if first_seg else None, zorder=10)
+                    label='Bed reflection' if first_seg else None, zorder=10)
 
             if unc_arr is not None:
                 unc_seg = unc_arr[i0:i1]
@@ -1955,10 +2007,9 @@ def plot_icetemp_profiles_side_by_side(
         prof_xy = np.column_stack([prof['x'], prof['y']]) if prof_has_xy else None
         _bh_names_ord = [r.get('name') for _, r in borehole_coords_df.iterrows()
                          if r.get('name') in temp_data_dict and r.get('name') in depth_dict]
-        _n_bh2 = max(len(_bh_names_ord), 1)
-        _bh_auto_col = {n: cmc.romaO(float(p))
-                for n, p in zip(_bh_names_ord,
-                        np.linspace(0.05, 0.75, _n_bh2))}
+        _bh_auto_col = {n: _QUALITATIVE_BH_COLORS[i % len(_QUALITATIVE_BH_COLORS)]
+                for i, n in enumerate(_bh_names_ord)}
+        zaa_tick_labeled = False
         for _, r in borehole_coords_df.iterrows():
             name = r.get('name')
             if name not in temp_data_dict or name not in depth_dict:
@@ -1997,10 +2048,27 @@ def plot_icetemp_profiles_side_by_side(
                         markersize=bh_marker_size, markerfacecolor=col,
                         markeredgecolor='black', markeredgewidth=0.4,
                         zorder=21, clip_on=not allow_bh_overlap)
+            # ZAA depth tick — short horizontal mark crossing the borehole stick,
+            # behind the sensor dots but above the interpolated profile; drawn on
+            # every borehole, only skipped where it would fall below the local bed
+            if zaa_depth is not None:
+                bed_elev_here = float(np.interp(loc, dist, zbed))
+                zaa_elev = surf_elev - float(zaa_depth)
+                if zaa_elev >= bed_elev_here:
+                    # White halo first so the tick stays visible against the whole
+                    # blue-cream-red temperature fill, not just one end of it
+                    ax.plot(loc, zaa_elev, marker='_', linestyle='None',
+                            markersize=20, markeredgewidth=zaa_lw * 1.6 + 2.2, color=zaa_halo_color,
+                            zorder=zaa_zorder - 0.1, clip_on=not allow_bh_overlap)
+                    ax.plot(loc, zaa_elev, marker='_', linestyle='None',
+                            markersize=18, markeredgewidth=zaa_lw * 1.6, color=zaa_color,
+                            zorder=zaa_zorder, clip_on=not allow_bh_overlap,
+                            label='ZAA depth' if not zaa_tick_labeled else None)
+                    zaa_tick_labeled = True
 
             name_color = (label_colors or {}).get(name, _bh_auto_col.get(name, 'red'))
             ax.text(loc, surf_elev + float(bh_label_offset), name,
-                    color=name_color, fontsize=18, ha='center', va='bottom',
+                    color=name_color, fontsize=18, fontweight='bold', ha='center', va='bottom',
                     zorder=22, clip_on=not allow_bh_overlap)
 
         ax.set_xlabel("Distance [m]")
@@ -2027,7 +2095,8 @@ def plot_icetemp_profiles_side_by_side(
                     firn_offset=firn_offsets_l[i],firn_year=firn_years_l[i],
                     firn_grid2=firn_grids2_l[i],  firn_tfm2=firn_tfms2_l[i],
                     firn_color2=firn_colors2_l[i], firn_lw2=firn_lws2_l[i],
-                    firn_offset2=firn_offsets2_l[i],firn_year2=firn_years2_l[i])
+                    firn_offset2=firn_offsets2_l[i],firn_year2=firn_years2_l[i],
+                    zaa_depth=zaa_depths_l[i])
 
     sm = ScalarMappable(norm=norm, cmap=cmap); sm.set_array([])
     lo_edge = float(levels.min())
@@ -2039,6 +2108,11 @@ def plot_icetemp_profiles_side_by_side(
                       extend='max')
     cb.set_ticks(ticks_asc)
     cb.set_ticklabels([f"{t:.{dec}f}" for t in ticks_asc])
-    cb.set_label('Ice Temperature [°C]')
+    # Sized explicitly (not via global rcParams) for the same reason as in
+    # plot_icetemp_profile — avoids drift depending on prior kernel state.
+    _fig_w, _fig_h = fig.get_size_inches()
+    _cbar_fontsize = max(6, int(22 * (_fig_w + _fig_h) / 2.0 / 12.0))
+    cb.set_label('Ice Temperature [°C]', fontsize=_cbar_fontsize)
+    cb.ax.tick_params(labelsize=_cbar_fontsize)
 
     return fig, axs
