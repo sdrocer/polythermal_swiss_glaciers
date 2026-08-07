@@ -177,6 +177,7 @@ class ThermistorDataPlotter:
         use_full_period: bool = False,  # NEW: average over entire observation period
         start_time=None,  # NEW: optional start time for full period (GeoPrecision + non-1TT/2TT NTC)
         end_time=None,    # NEW: optional end time for full period (GeoPrecision + non-1TT/2TT NTC)
+        zaa_depth: float | None = None,  # if given, draws a horizontal reference line at this depth
     ):
         """
         Plot temperature profiles for multiple GeoPrecision chains (daily mean at snapshot_time
@@ -436,6 +437,10 @@ class ThermistorDataPlotter:
         if _xmax > 0:
             ax.axvspan(0, _xmax, color='lightgrey', alpha=0.4, zorder=0)
             ax.set_xlim(_xmin, _xmax)
+        if zaa_depth is not None:
+            ax.axhline(zaa_depth, color='black', linestyle='-', linewidth=1.2, zorder=1)
+            ax.text(0.02, zaa_depth, 'ZAA', transform=ax.get_yaxis_transform(),
+                    ha='left', va='bottom', fontsize=max(8, int(base_fontsize)), color='black', zorder=2)
 
         # Apply custom x-tick step if provided
         if xtick_step is not None:

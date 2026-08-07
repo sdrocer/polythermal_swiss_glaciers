@@ -1609,7 +1609,7 @@ def plot_icetemp_profile(
                 ax.plot(loc, zaa_elev, marker='_', linestyle='None',
                         markersize=18, markeredgewidth=zaa_lw * 1.6, color=zaa_color,
                         zorder=zaa_zorder, clip_on=not allow_bh_overlap,
-                        label='ZAA depth' if not zaa_tick_labeled else None)
+                        label='ZAA' if not zaa_tick_labeled else None)
                 zaa_tick_labeled = True
         name_color = (label_colors or {}).get(name, _bh_auto_colors.get(name, 'red'))
         ax.text(loc, surf_elev + 6, name, color=name_color, fontsize=10, fontweight='bold',
@@ -1670,7 +1670,18 @@ def plot_icetemp_profile(
     format_plot(ax=ax, title=title, x_tick_rotation=0, legend_loc='upper left', adjust_linewidths=False, base_fontsize=base_fontsize)
     h, l = ax.get_legend_handles_labels()
     uniq = {};  [uniq.setdefault(li, hi) for hi, li in zip(h, l) if li]
-    ax.legend(uniq.values(), uniq.keys(), frameon=True, fancybox=False, edgecolor='black',
+    # Match panel (c)'s radargram legend order: Glacier surface, Bed reflection,
+    # CTS, then whatever else this panel has. Stable sort keeps same-rank items
+    # (e.g. the two firn-cover years) in their original plot order.
+    _legend_order = ('Glacier surface', 'Bed reflection', 'CTS', 'Estimated CTS', 'Firn cover', 'ZAA')
+    def _legend_rank(label):
+        for _i, _prefix in enumerate(_legend_order):
+            if label.startswith(_prefix):
+                return _i
+        return len(_legend_order)
+    _sorted_items = sorted(uniq.items(), key=lambda kv: _legend_rank(kv[0]))
+    ax.legend([hi for _, hi in _sorted_items], [li for li, _ in _sorted_items],
+              frameon=True, fancybox=False, edgecolor='black',
               framealpha=1, facecolor='white', loc='upper left', ncol=1, fontsize=legend_fontsize)
     plt.tight_layout()
     if return_mappable:
@@ -2063,7 +2074,7 @@ def plot_icetemp_profiles_side_by_side(
                     ax.plot(loc, zaa_elev, marker='_', linestyle='None',
                             markersize=18, markeredgewidth=zaa_lw * 1.6, color=zaa_color,
                             zorder=zaa_zorder, clip_on=not allow_bh_overlap,
-                            label='ZAA depth' if not zaa_tick_labeled else None)
+                            label='ZAA' if not zaa_tick_labeled else None)
                     zaa_tick_labeled = True
 
             name_color = (label_colors or {}).get(name, _bh_auto_col.get(name, 'red'))
