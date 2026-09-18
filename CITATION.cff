@@ -5,7 +5,7 @@ title: "Code for: Polythermal conditions in small glaciers in the Swiss Alps"
 authors:
   - family-names: Beer
     given-names: Janosch
-    orcid: https://orcid.org/0000-0000-0000-0000  # update with your ORCID
+    orcid: https://orcid.org/0009-0002-1128-5470
     affiliation: "Laboratory of Hydraulics, Hydrology and Glaciology (VAW), ETH Zurich; Swiss Federal Institute for Forest, Snow and Landscape Research (WSL), bâtiment ALPOLE, Sion, Switzerland"
 repository-code: https://github.com/sdrocer/polythermal_swiss_glaciers
 license: MIT
@@ -39,4 +39,4 @@ preferred-citation:
   journal: "EGUsphere"
   year: 2026
   doi: 10.5194/egusphere-2026-3042
-  notes: "Preprint, currently under review."
+  notes: "Accepted for publication in The Cryosphere (2 September 2026); DOI above is the EGUsphere preprint and will be updated once the final journal DOI is assigned."
