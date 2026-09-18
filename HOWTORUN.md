@@ -39,16 +39,17 @@ GLENGLAT_DB  = "/path/to/data/ice_temperature/glenglat_database"
 
 ## 5. Run the notebooks in order
 
-The notebooks are numbered and should be run sequentially, as later notebooks depend on outputs from earlier ones:
+The notebooks are numbered and should be run sequentially, as later notebooks depend on outputs from earlier ones. `10_extended_timeseries_2026.ipynb` is the exception — it's optional and standalone, not a dependency of any other notebook:
 
 | Notebook | Description |
 |---|---|
-| `1_study_sites_and_maps.ipynb` | Field site overview maps and GPR ice thickness maps |
-| `2_instrument_calibration.ipynb` | Geoprecision chain and Tynitag NTC calibration |
-| `3_temperature_profiles_and_historical_comparison.ipynb` | Temperature profiles, heatmaps, and historical comparison |
-| `4_data_processing.ipynb` | Load and export full borehole timeseries |
-| `5_temperature_timeseries.ipynb` | Englacial temperature timeseries (fig04) |
-| `6_englacial_profiles_and_metrics.ipynb` | Interpolated 2D profiles and thermistor metrics |
-| `7_firn_and_mass_balance.ipynb` | Firn change and mass balance figures |
-| `8_glenglat.ipynb` | glenglat database analysis and data submission |
-| `9_firn_validation.ipynb` | Firn map validation against historical orthophotos (figS12-S13) |
+| `01_study_sites_and_maps.ipynb` | Field site overview maps and GPR ice thickness maps (fig01) |
+| `02_instrument_calibration.ipynb` | Geoprecision chain and Tinytag NTC calibration |
+| `03_temperature_profiles_and_historical_comparison.ipynb` | Temperature profiles, heatmaps, and historical comparison (fig04) |
+| `04_data_processing.ipynb` | Load and export full borehole timeseries |
+| `05_temperature_timeseries.ipynb` | Englacial temperature timeseries (fig03) |
+| `06_englacial_profiles_and_metrics.ipynb` | Interpolated 2D profiles and thermistor metrics (fig05-07) |
+| `07_firn_and_mass_balance.ipynb` | Firn change and mass balance figures (fig08) |
+| `08_glenglat.ipynb` | glenglat database analysis and data submission |
+| `09_firn_validation.ipynb` | Firn map validation against historical orthophotos (figS12-S13) |
+| `10_extended_timeseries_2026.ipynb` | Optional: splices July 2026 read-outs onto the timeseries and produces working (non-paper) extended versions of fig03 and figS14-S16 |
