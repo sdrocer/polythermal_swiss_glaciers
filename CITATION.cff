@@ -9,7 +9,9 @@ authors:
     affiliation: "Laboratory of Hydraulics, Hydrology and Glaciology (VAW), ETH Zurich; Swiss Federal Institute for Forest, Snow and Landscape Research (WSL), bâtiment ALPOLE, Sion, Switzerland"
 repository-code: https://github.com/sdrocer/polythermal_swiss_glaciers
 license: MIT
-date-released: "2026-05-19"
+version: v1.0.0
+date-released: "2026-09-18"
+doi: 10.5281/zenodo.22834279
 preferred-citation:
   type: article
   title: "Polythermal conditions in small glaciers in the Swiss Alps"

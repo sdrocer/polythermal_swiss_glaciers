@@ -1,5 +1,6 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-v1.0.0--alpha-blue.svg)](https://github.com/sdrocer/polythermal_swiss_glaciers/releases/tag/v1.0.0-alpha)
+[![Version](https://img.shields.io/badge/version-v1.0.0-blue.svg)](https://github.com/sdrocer/polythermal_swiss_glaciers/releases/tag/v1.0.0)
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.22834279.svg)](https://doi.org/10.5281/zenodo.22834279)
 [![EGUsphere Preprint](https://img.shields.io/badge/Preprint-EGUsphere-orange.svg)](https://doi.org/10.5194/egusphere-2026-3042)
 
 ## Polythermal conditions in small glaciers in the Swiss Alps
