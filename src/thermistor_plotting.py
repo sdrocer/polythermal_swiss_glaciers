@@ -178,6 +178,7 @@ class ThermistorDataPlotter:
         start_time=None,  # NEW: optional start time for full period (GeoPrecision + non-1TT/2TT NTC)
         end_time=None,    # NEW: optional end time for full period (GeoPrecision + non-1TT/2TT NTC)
         zaa_depth: float | None = None,  # if given, draws a horizontal reference line at this depth
+        label_colors: dict | None = None,  # optional {label: color} override, e.g. to match panel (a)/(c)
     ):
         """
         Plot temperature profiles for multiple GeoPrecision chains (daily mean at snapshot_time
@@ -255,7 +256,7 @@ class ThermistorDataPlotter:
         exclude_set = set(exclude_labels) if exclude_labels else set()
 
         # Colors
-        color_map = build_profile_color_map(labels)
+        color_map = label_colors if label_colors is not None else build_profile_color_map(labels)
         _ncols = max(total_series, 1)
         fallback_colors = [QUALITATIVE_BH_COLORS[i % len(QUALITATIVE_BH_COLORS)] for i in range(_ncols)]
 
