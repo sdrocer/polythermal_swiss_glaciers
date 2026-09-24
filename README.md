@@ -1,16 +1,16 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Version](https://img.shields.io/badge/version-v1.0.0-blue.svg)](https://github.com/sdrocer/polythermal_swiss_glaciers/releases/tag/v1.0.0)
 [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.22834279.svg)](https://doi.org/10.5281/zenodo.22834279)
-[![EGUsphere Preprint](https://img.shields.io/badge/Preprint-EGUsphere-orange.svg)](https://doi.org/10.5194/egusphere-2026-3042)
+[![The Cryosphere](https://img.shields.io/badge/Published-The%20Cryosphere-brightgreen.svg)](https://doi.org/10.5194/tc-20-5453-2026)
 
 ## Polythermal conditions in small glaciers in the Swiss Alps
-#### Check out the preprint here: [egusphere-2026-3042](https://egusphere.copernicus.org/preprints/2026/egusphere-2026-3042/)
+#### Read the paper here: [The Cryosphere, 20, 5453–5473](https://doi.org/10.5194/tc-20-5453-2026)
 
 ---
 
 ### How to cite
 
-Beer, J., Jacquemart, M., Huss, M., Santin, I., Racz, G. C., Ogier, C., Gindraux, S., Hösli, L., Moser, R., Irving, J., and Farinotti, D.: Polythermal conditions in small glaciers in the Swiss Alps, EGUsphere [preprint], https://doi.org/10.5194/egusphere-2026-3042, 2026.
+Beer, J., Jacquemart, M., Huss, M., Santin, I., Clara Racz, G., Ogier, C., Gindraux, S., Hösli, L., Moser, R., Irving, J., Fischer, M., and Farinotti, D.: Polythermal conditions in small glaciers in the Swiss Alps, The Cryosphere, 20, 5453–5473, https://doi.org/10.5194/tc-20-5453-2026, 2026.
 
 ---
 

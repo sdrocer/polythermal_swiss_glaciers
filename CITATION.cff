@@ -24,8 +24,8 @@ preferred-citation:
       given-names: Matthias
     - family-names: Santin
       given-names: Ilaria
-    - family-names: Racz
-      given-names: Gabriela Clara
+    - family-names: Clara Racz
+      given-names: Gabriela
     - family-names: Ogier
       given-names: Christophe
     - family-names: Gindraux
@@ -36,9 +36,13 @@ preferred-citation:
       given-names: Raphael
     - family-names: Irving
       given-names: James
+    - family-names: Fischer
+      given-names: Mauro
     - family-names: Farinotti
       given-names: Daniel
-  journal: "EGUsphere"
+  journal: "The Cryosphere"
+  volume: 20
+  start: 5453
+  end: 5473
   year: 2026
-  doi: 10.5194/egusphere-2026-3042
-  notes: "Accepted for publication in The Cryosphere (2 September 2026); DOI above is the EGUsphere preprint and will be updated once the final journal DOI is assigned."
+  doi: 10.5194/tc-20-5453-2026
